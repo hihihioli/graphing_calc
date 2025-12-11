@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 macroquad = "0.4.14"
+
+[package.metadata.bundle]
+name = "Graphing Calculator"
+identifier = "com.twidilers.hihihioli.graping_calc"
+#icon = ["icon.png"]
+osx_minimum_system_version = "13.1"
