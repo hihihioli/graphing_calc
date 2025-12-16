@@ -18,14 +18,14 @@ fn F(x: f64, y: f64) -> f64 {
     // let sx = x.sin();
     // let sy = y.sin();
     // sx*sy
-    // sx * sx + cy * cy - 1_f64
+    //sx * sx + cy * cy - 1_f64
     // x*x*x*x - 2.0 * x*x*x - 15.0 * x*x - y
     // x.sqrt() - y
     // x.ln() - y
-    // (x*x).sin()*(y*y).sin()
+     (x*x).sin()*(y*y).sin()
     //x.sin()+y.sin()-(x*y).sin() //polka-dot
     // (x/5.0).sin()*(y/5.0).sin()-0.7
-    (PI * x / 2.0).cos().powf(0.86016)+(PI * y / 2.0).cos().powf(0.86016)-1.0
+    //(PI * x / 2.0).cos().powf(0.86016)+(PI * y / 2.0).cos().powf(0.86016)-1.0
     // x.cos().powf(10.0)+y.cos().powf(10.0)-1.0
     // x.sin()*y.sin()*x*x*y*y/(x/y).cos()*(x*y).sin() //wird
     // x*x+y*y-2.0
@@ -54,9 +54,11 @@ async fn main() {
     let dpi_scale = screen_dpi_scale() as f64;
     let mut x_center = 0f64;
     let mut y_center = 0f64;
+    // Physical pixel dimensions for high-res rendering
+    let (img_width, img_height) = ((width * dpi_scale) as u16, (height * dpi_scale) as u16);
     let mut img = Image::gen_image_color(
-        width as u16 * dpi_scale as u16,
-        height as u16 * dpi_scale as u16,
+        img_width,
+        img_height,
         BLACK,
     ); //an image to manipulate
     let mut tex = Texture2D::from_image(&img); // reserve memory in the gpu
@@ -95,11 +97,11 @@ async fn main() {
         );
 
         //Start doing the graphing fr
-        for y_pixel in 0..(height * dpi_scale) as i32 {
+        for y_pixel in 0..img_height as i32 {
             let yp = y_pixel as f64 / dpi_scale;
             let t_y = yp / height;
             let y_coord: f64 = max.1 + t_y * (min.1 - max.1);
-            for x_pixel in 0..(width * dpi_scale) as i32 {
+            for x_pixel in 0..img_width as i32 {
                 let xp = x_pixel as f64 / dpi_scale;
                 let t_x = xp / width;
                 let x_coord: f64 = min.0 + t_x * (max.0 - min.0);
