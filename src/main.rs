@@ -2,6 +2,7 @@ use macroquad::prelude::*;
 pub use macroquad::ui::*;
 use std::default::Default;
 use std::thread::yield_now;
+use std::f64::consts::PI;
 
 fn window_conf() -> Conf {
     //the config for the main window
@@ -18,7 +19,17 @@ fn F(x: f64, y: f64) -> f64 {
     // let sy = y.sin();
     // sx*sy
     // sx * sx + cy * cy - 1_f64
-    (x * x).sin() + (y * y).sin() //- 1f64
+    // x*x*x*x - 2.0 * x*x*x - 15.0 * x*x - y
+    // x.sqrt() - y
+    // x.ln() - y
+    // (x*x).sin()*(y*y).sin()
+    //x.sin()+y.sin()-(x*y).sin() //polka-dot
+    // (x/5.0).sin()*(y/5.0).sin()-0.7
+    (PI * x / 2.0).cos().powf(0.86016)+(PI * y / 2.0).cos().powf(0.86016)-1.0
+    // x.cos().powf(10.0)+y.cos().powf(10.0)-1.0
+    // x.sin()*y.sin()*x*x*y*y/(x/y).cos()*(x*y).sin() //wird
+    // x*x+y*y-2.0
+    // (x * x).sin() + (y * y).sin() // - 1f64
     // x * x - y
     // x*x+y*y-1f32
     // 3.0 * y.sqrt() - x - 2.0
@@ -49,6 +60,7 @@ async fn main() {
         BLACK,
     ); //an image to manipulate
     let mut tex = Texture2D::from_image(&img); // reserve memory in the gpu
+    let axis_color: Color = GOLD;
 
     loop {
         //handle zoom
@@ -56,17 +68,16 @@ async fn main() {
         let mouse_x = mouse_position_local().x as f64 * width / 2.0 / scale + x_center;
         let mouse_y = mouse_position_local().y as f64 * height / 2.0 / scale * -1f64 + y_center;
         if mouse_wheel().1 != 0.0 {
-            let delta_scale = scale * mouse_wheel().1 as f64 * delta_time * 0.3;
-            scale += delta_scale;
-        }
-        if scale > 1f64 {
+            let delta_scale = scale * mouse_wheel().1 as f64 * delta_time * 0.1;
+            if scale >= 1f64 {
+                scale += delta_scale;
+            } else {
+                scale = 1f64;
+            }
             x_center = mouse_x - mouse_position_local().x as f64 * width / 2.0 / scale;
             y_center = mouse_y - mouse_position_local().y as f64 * height / 2.0 / scale * -1.0;
+        }
 
-        }
-        if scale < 1f64 {
-            scale = 1f64;
-        }
         //handle movement
         if is_mouse_button_down(MouseButton::Left) {
             //mouse movements
@@ -155,7 +166,7 @@ async fn main() {
             xc_pix as f32,
             height as f32,
             1f32,
-            GREEN,
+            axis_color,
         );
         //draw the tick marks
         for i in 0..((height - yc_pix) / scale + 1f64) as i32 {
@@ -166,7 +177,7 @@ async fn main() {
                 xc_pix as f32 - 3f32,
                 (i as f64 * scale + yc_pix) as f32,
                 1f32,
-                GREEN,
+                axis_color,
             );
         }
         for i in 0..(yc_pix / scale + 1f64) as i32 {
@@ -177,7 +188,7 @@ async fn main() {
                 (xc_pix - 3f64) as f32,
                 (-1f64 * i as f64 * scale + yc_pix) as f32,
                 1f32,
-                GREEN,
+                axis_color,
             );
         }
 
@@ -188,7 +199,7 @@ async fn main() {
             width as f32,
             yc_pix as f32,
             1f32,
-            GREEN,
+            axis_color,
         ); //x-axis
         //draw the tick marks
         for i in 0..((width - xc_pix) / scale + 1f64) as i32 {
@@ -199,7 +210,7 @@ async fn main() {
                 (i as f64 * scale + xc_pix) as f32,
                 (yc_pix - 3f64) as f32,
                 1f32,
-                GREEN,
+                axis_color,
             );
         }
         for i in 0..(xc_pix / scale + 1f64) as i32 {
@@ -210,35 +221,12 @@ async fn main() {
                 (-1f64 * i as f64 * scale + xc_pix) as f32,
                 (yc_pix - 3f64) as f32,
                 1f32,
-                GREEN,
+                axis_color,
             );
         }
 
-        draw_text_in_corner(&max, &min, &scale); //draw text
-        draw_text(
-            format!(
-                "Mouse:{},{}",
-                mouse_x,
-                mouse_y
-            )
-            .as_str(),
-            10.0,
-            95.0,
-            25.0,
-            WHITE,
-        );
-        draw_text(
-            format!(
-                "Center:{},{}",
-                x_center,
-                y_center
-            )
-                .as_str(),
-            10.0,
-            115.0,
-            25.0,
-            WHITE,
-        );
+        draw_text_in_corner(&max, &min, &scale,&mouse_x,&mouse_y,&x_center,&y_center); //draw text
+        
 
         next_frame().await //draw the frame I think
     }
@@ -254,7 +242,7 @@ fn sign(v: f64) -> i8 {
     } // treat exact (or near) zero separately if you like
 }
 
-fn draw_text_in_corner(corner1: &(f64, f64), corner2: &(f64, f64), scale: &f64) {
+fn draw_text_in_corner(corner1: &(f64, f64), corner2: &(f64, f64), scale: &f64,mouse_x:&f64,mouse_y:&f64,x_center:&f64,y_center:&f64) {
     draw_fps(); //todo: draw above graph but semi-transparent
     draw_text(
         format!("{},{}", corner1.0, corner1.1).as_str(),
@@ -274,6 +262,30 @@ fn draw_text_in_corner(corner1: &(f64, f64), corner2: &(f64, f64), scale: &f64) 
         format!("{},{}, scale: {}", screen_width(), screen_height(), scale).as_str(),
         10.0,
         75.0,
+        25.0,
+        WHITE,
+    );
+    draw_text(
+        format!(
+            "Mouse:{},{}",
+            mouse_x,
+            mouse_y
+        )
+            .as_str(),
+        10.0,
+        95.0,
+        25.0,
+        WHITE,
+    );
+    draw_text(
+        format!(
+            "Center:{},{}",
+            x_center,
+            y_center
+        )
+            .as_str(),
+        10.0,
+        115.0,
         25.0,
         WHITE,
     );
