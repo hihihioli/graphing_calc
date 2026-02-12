@@ -33,18 +33,54 @@ fn apply_glow(x: usize, y: usize, img_data: &[[u8; 4]], width: usize, height: us
             let ny = y as i32 + dy;
             if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
                 let idx = ny as usize * width + nx as usize;
-                let pixel = img_data[idx];
-                let dist = ((dx * dx + dy * dy) as f32).sqrt();
-                let weight = (-dist * 0.5).exp();
-                r += pixel[0] as f32 * weight;
-                g += pixel[1] as f32 * weight;
-                b += pixel[2] as f32 * weight;
-                count += weight;
+                if idx < img_data.len() {
+                    let pixel = img_data[idx];
+                    let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                    let weight = (-dist * 0.5).exp();
+                    r += pixel[0] as f32 * weight;
+                    g += pixel[1] as f32 * weight;
+                    b += pixel[2] as f32 * weight;
+                    count += weight;
+                }
             }
         }
     }
     
     [(r / count) as u8, (g / count) as u8, (b / count) as u8, 255]
+}
+
+// Swirl distortion effect - applies a slow rotating swirl to the image
+#[inline(always)]
+fn apply_swirl(x: usize, y: usize, img_data: &[[u8; 4]], width: usize, height: usize, time: f32) -> [u8; 4] {
+    let center_x = width as f32 / 2.0;
+    let center_y = height as f32 / 2.0;
+    
+    let dx = x as f32 - center_x;
+    let dy = y as f32 - center_y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    
+    // Slow rotating swirl effect
+    let max_dist = (center_x * center_x + center_y * center_y).sqrt();
+    let swirl_amount = (1.0 - (dist / max_dist).min(1.0)) * 0.5; // Reduced swirl intensity
+    let angle = time * 0.5 + swirl_amount * std::f32::consts::PI;
+    
+    let cos_angle = angle.cos();
+    let sin_angle = angle.sin();
+    
+    let rotated_x = dx * cos_angle - dy * sin_angle;
+    let rotated_y = dx * sin_angle + dy * cos_angle;
+    
+    let src_x = (center_x + rotated_x) as i32;
+    let src_y = (center_y + rotated_y) as i32;
+    
+    if src_x >= 0 && src_x < width as i32 && src_y >= 0 && src_y < height as i32 {
+        let idx = src_y as usize * width + src_x as usize;
+        if idx < img_data.len() {
+            return img_data[idx];
+        }
+    }
+    
+    [0, 0, 0, 255]
 }
 
 #[macroquad::main(window_conf)]
@@ -54,6 +90,9 @@ async fn main() {
     let mut chromatic_aberration = false;
     let mut scanlines = false;
     let mut vignette = true;
+    let mut swirl_enabled = false;
+    let mut show_debug_menu = true;
+    let mut auto_zoom = true;
     let mut scale = 20.0f32;
     
     // Wait until window is properly initialized with valid dimensions
@@ -92,6 +131,8 @@ async fn main() {
     let mut img = Image::gen_image_color(img_width, img_height, BLACK);
     let tex = Texture2D::from_image(&img);
     
+    let mut time = 0.0f32;
+    
     // Pre-compute vignette lookup table for optimization
     // Cast to usize before multiplying to prevent u16 overflow
     let mut vignette_lut = vec![1.0f32; img_width as usize * img_height as usize];
@@ -109,13 +150,29 @@ async fn main() {
 
     loop {
         let delta_time = get_frame_time();
-        scale += scale * delta_time;
+        time += delta_time;
+        
+        // Auto-zoom or manual control
+        if auto_zoom {
+            scale += scale * delta_time;
+        } else {
+            // Manual zoom control
+            if is_key_down(macroquad::prelude::KeyCode::Up) {
+                scale *= 1.0 + delta_time;
+            }
+            if is_key_down(macroquad::prelude::KeyCode::Down) {
+                scale *= 1.0 - delta_time;
+            }
+        }
         
         // Toggle effects with keys
         if is_key_pressed(macroquad::prelude::KeyCode::Key1) { glow_enabled = !glow_enabled; }
         if is_key_pressed(macroquad::prelude::KeyCode::Key2) { chromatic_aberration = !chromatic_aberration; }
         if is_key_pressed(macroquad::prelude::KeyCode::Key3) { scanlines = !scanlines; }
         if is_key_pressed(macroquad::prelude::KeyCode::Key4) { vignette = !vignette; }
+        if is_key_pressed(macroquad::prelude::KeyCode::Key5) { swirl_enabled = !swirl_enabled; }
+        if is_key_pressed(macroquad::prelude::KeyCode::D) { show_debug_menu = !show_debug_menu; }
+        if is_key_pressed(macroquad::prelude::KeyCode::M) { auto_zoom = !auto_zoom; }
         
         let inv_scale = 1.0 / scale;
         let half_width_scaled = width * inv_scale * 0.5;
@@ -156,11 +213,13 @@ async fn main() {
             for y in 0..img_height as usize {
                 for x in 0..img_width as usize {
                     let idx = y * img_width as usize + x;
-                    let vignette_strength = vignette_lut[idx];
-                    let pixel = &mut img_data[idx];
-                    pixel[0] = (pixel[0] as f32 * vignette_strength) as u8;
-                    pixel[1] = (pixel[1] as f32 * vignette_strength) as u8;
-                    pixel[2] = (pixel[2] as f32 * vignette_strength) as u8;
+                    if idx < img_data.len() && idx < vignette_lut.len() {
+                        let vignette_strength = vignette_lut[idx];
+                        let pixel = &mut img_data[idx];
+                        pixel[0] = (pixel[0] as f32 * vignette_strength) as u8;
+                        pixel[1] = (pixel[1] as f32 * vignette_strength) as u8;
+                        pixel[2] = (pixel[2] as f32 * vignette_strength) as u8;
+                    }
                 }
             }
         }
@@ -172,32 +231,50 @@ async fn main() {
             for y in 0..img_height as usize {
                 for x in 0..img_width as usize {
                     let idx = y * img_width as usize + x;
-                    img_data[idx] = apply_glow(x, y, &img_data_copy, img_width as usize, img_height as usize, 2);
+                    if idx < img_data.len() {
+                        img_data[idx] = apply_glow(x, y, &img_data_copy, img_width as usize, img_height as usize, 2);
+                    }
+                }
+            }
+        }
+        
+        // Apply swirl distortion (slow rotating effect)
+        if swirl_enabled {
+            let img_data_copy: Vec<[u8; 4]> = img.get_image_data().to_vec();
+            let img_data = img.get_image_data_mut();
+            for y in 0..img_height as usize {
+                for x in 0..img_width as usize {
+                    let idx = y * img_width as usize + x;
+                    if idx < img_data.len() {
+                        img_data[idx] = apply_swirl(x, y, &img_data_copy, img_width as usize, img_height as usize, time);
+                    }
                 }
             }
         }
         
         tex.update(&img);
         
-        // Chromatic aberration effect - creates color fringing by drawing shifted copies
+        // Normal rendering without chromatic aberration (draw texture once)
+        draw_texture_ex(&tex, 0.0, 0.0, WHITE, 
+            DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
+        
+        // Chromatic aberration effect - creates subtle color fringing by drawing shifted color channels
         if chromatic_aberration {
-            let offset = 0.005 * width;
+            let offset = 2.0; // Small pixel offset for subtle effect
             
-            // Draw main texture at center with full brightness
-            draw_texture_ex(&tex, 0.0, 0.0, WHITE, 
-                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
+            // Draw red channel shifted right
+            draw_texture_ex(&tex, offset, 0.0, Color::new(0.15, 0.0, 0.0, 1.0), 
+                DrawTextureParams { 
+                    dest_size: Some(vec2(width, height)), 
+                    ..Default::default() 
+                });
             
-            // Draw semi-transparent copy shifted right (creates red fringe on right edge)
-            draw_texture_ex(&tex, offset, 0.0, Color::new(1.0, 1.0, 1.0, 0.2), 
-                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
-            
-            // Draw semi-transparent copy shifted left (creates blue fringe on left edge)
-            draw_texture_ex(&tex, -offset, 0.0, Color::new(1.0, 1.0, 1.0, 0.2), 
-                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
-        } else {
-            // Normal rendering without chromatic aberration
-            draw_texture_ex(&tex, 0.0, 0.0, WHITE, 
-                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
+            // Draw blue channel shifted left
+            draw_texture_ex(&tex, -offset, 0.0, Color::new(0.0, 0.0, 0.15, 1.0), 
+                DrawTextureParams { 
+                    dest_size: Some(vec2(width, height)), 
+                    ..Default::default() 
+                });
         }
         
         // Scanlines overlay
@@ -207,7 +284,51 @@ async fn main() {
             }
         }
         
-        draw_text("1:Glow 2:ChromaAb 3:Scanlines 4:Vignette", 10.0, 30.0, 20.0, WHITE);
+        // Debug menu UI
+        if show_debug_menu {
+            let menu_x = 10.0;
+            let menu_y = 10.0;
+            let line_height = 25.0;
+            let mut current_y = menu_y;
+            
+            // Semi-transparent background for menu
+            draw_rectangle(menu_x - 5.0, menu_y - 5.0, 400.0, 250.0, Color::new(0.0, 0.0, 0.0, 0.7));
+            
+            draw_text("=== DEBUG MENU ===", menu_x, current_y + 20.0, 24.0, WHITE);
+            current_y += line_height * 1.5;
+            
+            draw_text(&format!("1: Glow [{}]", if glow_enabled { "ON" } else { "OFF" }), 
+                menu_x, current_y + 20.0, 20.0, if glow_enabled { GREEN } else { GRAY });
+            current_y += line_height;
+            
+            draw_text(&format!("2: Chromatic Aberration [{}]", if chromatic_aberration { "ON" } else { "OFF" }), 
+                menu_x, current_y + 20.0, 20.0, if chromatic_aberration { GREEN } else { GRAY });
+            current_y += line_height;
+            
+            draw_text(&format!("3: Scanlines [{}]", if scanlines { "ON" } else { "OFF" }), 
+                menu_x, current_y + 20.0, 20.0, if scanlines { GREEN } else { GRAY });
+            current_y += line_height;
+            
+            draw_text(&format!("4: Vignette [{}]", if vignette { "ON" } else { "OFF" }), 
+                menu_x, current_y + 20.0, 20.0, if vignette { GREEN } else { GRAY });
+            current_y += line_height;
+            
+            draw_text(&format!("5: Swirl Distortion [{}]", if swirl_enabled { "ON" } else { "OFF" }), 
+                menu_x, current_y + 20.0, 20.0, if swirl_enabled { GREEN } else { GRAY });
+            current_y += line_height;
+            
+            draw_text(&format!("M: Movement Mode [{}]", if auto_zoom { "AUTO-ZOOM" } else { "MANUAL" }), 
+                menu_x, current_y + 20.0, 20.0, if auto_zoom { YELLOW } else { ORANGE });
+            current_y += line_height;
+            
+            draw_text("D: Toggle Debug Menu", menu_x, current_y + 20.0, 20.0, LIGHTGRAY);
+            current_y += line_height;
+            
+            if !auto_zoom {
+                draw_text("Arrow Up/Down: Zoom In/Out", menu_x, current_y + 20.0, 18.0, SKYBLUE);
+            }
+        }
+        
         draw_fps();
 
         next_frame().await
