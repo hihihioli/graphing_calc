@@ -1,3 +1,4 @@
+use macroquad::color::hsl_to_rgb;
 use macroquad::prelude::*;
 pub use macroquad::ui::*;
 use rayon::prelude::*;
@@ -7,12 +8,12 @@ fn window_conf() -> Conf {
     //the config for the main window
     Conf {
         window_title: "Main Window".to_string(),
-        high_dpi: true,
+        high_dpi: false,
         fullscreen: true,
         ..Default::default()
     }
 }
-fn F(x: f64, y: f64) -> f64 {
+fn F(x: f64, y: f64, a: f64) -> f64 {
     // y-(x+4.0)*(x-3.0)*(x-3.0)*(x+1.0)*(x+1.0)*(x+1.0)
     // let sx = x.sin();
     // let sy = y.sin();
@@ -23,7 +24,8 @@ fn F(x: f64, y: f64) -> f64 {
     // x.ln() - y
     // (x*x).sin()*(y*y).sin()
     //x.sin()+y.sin()-(x*y).sin() //polka-dot
-    0.1*(y.abs().ln()/0.1).sin()-0.1*(x.abs().ln()/0.1).cos()
+    (((y * (a * -1.0).exp2()).abs().ln() / 0.1).sin() - ((x * a.exp2()).abs().ln() / 0.1).cos())
+        * 0.5
     // (x/5.0).sin()*(y/5.0).sin()-0.7
     //(PI * x / 2.0).cos().powf(0.86016)+(PI * y / 2.0).cos().powf(0.86016)-1.0
     // x.cos().powf(10.0)+y.cos().powf(10.0)-1.0
@@ -61,31 +63,30 @@ async fn main() {
     let mut needs_redraw = true;
     // Physical pixel dimensions for high-res rendering
     let (img_width, img_height) = ((width * dpi_scale) as u16, (height * dpi_scale) as u16);
-    let mut img = Image::gen_image_color(
-        img_width,
-        img_height,
-        BLACK,
-    ); //an image to manipulate
+    let mut img = Image::gen_image_color(img_width, img_height, BLACK); //an image to manipulate
     let mut tex = Texture2D::from_image(&img); // reserve memory in the gpu
     let axis_color: Color = GOLD;
+    let mut a: f64 = 0f64;
+    let mut color: f32 = 0.0;
 
     loop {
         //handle zoom
         let delta_time = get_frame_time() as f64;
         let mouse_x = 0 as f64 * width / 2.0 / scale + x_center;
         let mouse_y = 0 as f64 * height / 2.0 / scale * -1f64 + y_center;
-        
-        if 1.0 != 0.0 {
-            let delta_scale = scale * 10 as f64 * delta_time * 0.1;
-            if scale >= 1f64 {
-                scale += delta_scale;
-            } else {
-                scale = 1f64;
-            }
-            x_center = mouse_x - 0f64 * width / 2.0 / scale;
-            y_center = mouse_y - 0 as f64 * height / 2.0 / scale * -1.0;
-            needs_redraw = true;
+
+        color += 0.01 * delta_time as f32;
+
+        let delta_scale = scale * 10 as f64 * delta_time * 0.1;
+        if scale >= 1f64 {
+            scale += delta_scale;
+            a += 0.5 * delta_time;
+        } else {
+            scale = 1f64;
         }
+        x_center = mouse_x - 0f64 * width / 2.0 / scale;
+        y_center = mouse_y - 0 as f64 * height / 2.0 / scale * -1.0;
+        needs_redraw = true;
 
         //handle movement
         if is_mouse_button_down(MouseButton::Left) {
@@ -105,48 +106,43 @@ async fn main() {
         );
 
         // Only redraw if something changed
-        if needs_redraw || scale != last_scale || x_center != last_x_center || y_center != last_y_center {
+        if needs_redraw
+            || scale != last_scale
+            || x_center != last_x_center
+            || y_center != last_y_center
+        {
             // No need to resize - always using same DPI
-            
+
             //Start doing the graphing fr - using parallel processing
             let img_data = img.get_image_data_mut();
-            img_data.par_chunks_mut(img_width as usize)
+            img_data
+                .par_chunks_mut(img_width as usize)
                 .enumerate()
                 .for_each(|(y_pixel, row)| {
-                let yp = y_pixel as f64 / dpi_scale;
-                let t_y = yp / height;
-                let y_coord: f64 = max.1 + t_y * (min.1 - max.1);
-                
-                for x_pixel in 0..img_width as usize {
-                    let xp = x_pixel as f64 / dpi_scale;
-                    let t_x = xp / width;
-                    let x_coord: f64 = min.0 + t_x * (max.0 - min.0);
+                    let yp = y_pixel as f64 / dpi_scale;
+                    let t_y = yp / height;
+                    let y_coord: f64 = max.1 + t_y * (min.1 - max.1);
 
-                    let val = F(x_coord, y_coord);
-                    // Use exp2 instead of powf for better performance
-                    let intensity = (-val.abs()).exp2() as f32;
-                    
-                    let color = if sign(val) < 0 {
-                        Color {
-                            r: 0f32,
-                            g: 0f32,
-                            b: intensity,
-                            a: 1f32,
-                        }
-                    } else {
-                        Color {
-                            r: intensity,
-                            g: 0f32,
-                            b: 0f32,
-                            a: 1f32,
-                        }
-                    };
-                    row[x_pixel] = color.into();
-                }
-            });
-            
+                    for x_pixel in 0..img_width as usize {
+                        let xp = x_pixel as f64 / dpi_scale;
+                        let t_x = xp / width;
+                        let x_coord: f64 = min.0 + t_x * (max.0 - min.0);
+
+                        let val = F(x_coord, y_coord, a);
+                        // Use exp2 instead of powf for better performance
+                        let intensity = (-val.abs()).exp2() as f32;
+
+                        let color = if sign(val) < 0 {
+                            hsl_to_rgb(color % 1.0, 1f32, intensity / 2.0)
+                        } else {
+                            hsl_to_rgb((color + 0.5) % 1.0, 1f32, intensity / 2.0)
+                        };
+                        row[x_pixel] = color.into();
+                    }
+                });
+
             tex.update(&img);
-            
+
             // Update state tracking
             last_scale = scale;
             last_x_center = x_center;
@@ -250,7 +246,15 @@ fn sign(v: f64) -> i8 {
     } // treat exact (or near) zero separately if you like
 }
 
-fn draw_text_in_corner(corner1: &(f64, f64), corner2: &(f64, f64), scale: &f64,mouse_x:&f64,mouse_y:&f64,x_center:&f64,y_center:&f64) {
+fn draw_text_in_corner(
+    corner1: &(f64, f64),
+    corner2: &(f64, f64),
+    scale: &f64,
+    mouse_x: &f64,
+    mouse_y: &f64,
+    x_center: &f64,
+    y_center: &f64,
+) {
     draw_fps(); //todo: draw above graph but semi-transparent
     draw_text(
         format!("{},{}", corner1.0, corner1.1).as_str(),
@@ -274,24 +278,14 @@ fn draw_text_in_corner(corner1: &(f64, f64), corner2: &(f64, f64), scale: &f64,m
         WHITE,
     );
     draw_text(
-        format!(
-            "Mouse:{},{}",
-            mouse_x,
-            mouse_y
-        )
-            .as_str(),
+        format!("Mouse:{},{}", mouse_x, mouse_y).as_str(),
         10.0,
         95.0,
         25.0,
         WHITE,
     );
     draw_text(
-        format!(
-            "Center:{},{}",
-            x_center,
-            y_center
-        )
-            .as_str(),
+        format!("Center:{},{}", x_center, y_center).as_str(),
         10.0,
         115.0,
         25.0,
