@@ -1,6 +1,5 @@
 use macroquad::prelude::*;
 pub use macroquad::ui::*;
-use rayon::prelude::*;
 use std::default::Default;
 
 fn window_conf() -> Conf {
