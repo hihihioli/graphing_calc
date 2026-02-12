@@ -101,15 +101,15 @@ async fn main() {
         let w = screen_width();
         let h = screen_height();
         if w > 0.0 && h > 0.0 {
-            let test_img_w = (w * 1.0) as u16;
-            let test_img_h = (h * 1.0) as u16;
+            let test_img_w = w as u16;
+            let test_img_h = h as u16;
             if test_img_w > 0 && test_img_h > 0 {
                 break;
             }
         }
     }
     
-    let (width, height) = (screen_width() as f32, screen_height() as f32);
+    let (width, height) = (screen_width(), screen_height());
     
     // Safety check - ensure dimensions are valid
     if width <= 0.0 || height <= 0.0 {
@@ -161,7 +161,7 @@ async fn main() {
                 scale *= 1.0 + delta_time;
             }
             if is_key_down(macroquad::prelude::KeyCode::Down) {
-                scale *= 1.0 - delta_time;
+                scale = (scale * (1.0 - delta_time)).max(1.0);
             }
         }
         
