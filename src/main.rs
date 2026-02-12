@@ -19,23 +19,30 @@ void main() {
 "#;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCENE SHADER
+// SCENE SHADER — fully precision-safe, loops forever
 //
-// Algebraically equivalent to the original F(x,y,a) but avoids exp2(a):
-//   sin(log(|y * 2^-a|) / 0.1) = sin((log|y| - a*ln2) * 10)
-//   cos(log(|x * 2^a|)  / 0.1) = cos((log|x| + a*ln2) * 10)
+// Key insight: the original pattern uses log(|coord * 2^a|), which blows up.
+// But log(|x * k|) = log|x| + log(k), so scaling is just a phase shift in
+// log-space. We pass TWO wrapping phases:
 //
-// 'a' is wrapped mod (2π / (10·ln2)) ≈ 0.9065 so it loops seamlessly.
-// We pass 'a_ln2_10' = a * ln(2) * 10 directly (pre-wrapped to [0, 2π]).
+//   zoom_phase: shifts both log terms equally (looks like zooming in/out)
+//   a_phase:    shifts y and x in opposite directions (the original animation)
+//
+// y term: sin(log|y| * 10 - zoom_phase - a_phase)
+// x term: cos(log|x| * 10 - zoom_phase + a_phase)
+//
+// Coordinates stay in a FIXED window — no precision loss, ever.
+// Both phases wrap mod 2π — loops seamlessly forever.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SCENE_FRAG: &str = r#"#version 100
 precision highp float;
 varying vec2 uv;
 
-uniform vec2 coord_min;
-uniform vec2 coord_max;
-uniform float a_phase;   // = a * ln(2) * 10, pre-wrapped to [0, 2π]
+uniform vec2 center;       // pan offset (world space)
+uniform vec2 half_extent;  // half-size of coordinate window (constant)
+uniform float a_phase;     // animation phase, wraps [0, 2π)
+uniform float zoom_phase;  // zoom phase, wraps [0, 2π)
 uniform float hue_shift;
 
 vec3 hsl2rgb(float h, float s, float l) {
@@ -54,16 +61,17 @@ vec3 hsl2rgb(float h, float s, float l) {
 }
 
 void main() {
-    float x_coord = mix(coord_min.x, coord_max.x, uv.x);
-    float y_coord = mix(coord_max.y, coord_min.y, uv.y);
+    // Map UV → world coordinates (FIXED window, never shrinks)
+    float x_coord = center.x + (uv.x - 0.5) * half_extent.x * 2.0;
+    float y_coord = center.y + (0.5 - uv.y) * half_extent.y * 2.0;
 
-    // log(|coord|) — clamp to avoid log(0)
-    float log_y = log(max(abs(y_coord), 1e-20));
-    float log_x = log(max(abs(x_coord), 1e-20));
+    // log|coord| — the core of the pattern, stays in a stable range
+    float log_y = log(max(abs(y_coord), 1e-20)) * 10.0;
+    float log_x = log(max(abs(x_coord), 1e-20)) * 10.0;
 
-    // Original: sin(log(|y·2^-a|)*10) - cos(log(|x·2^a|)*10)
-    // Rewritten without exp2:
-    float val = (sin(log_y * 10.0 - a_phase) - cos(log_x * 10.0 + a_phase)) * 0.5;
+    // Apply both phase shifts — this IS the zoom + animation, no exp2 needed
+    float val = (sin(log_y - zoom_phase - a_phase)
+               - cos(log_x - zoom_phase + a_phase)) * 0.5;
 
     float intensity = exp2(-abs(val));
 
@@ -76,7 +84,7 @@ void main() {
 "#;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BRIGHTNESS EXTRACTION
+// BLOOM SHADERS (unchanged)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BRIGHT_FRAG: &str = r#"#version 100
@@ -90,10 +98,6 @@ void main() {
     gl_FragColor = brightness > threshold ? color : vec4(0.0, 0.0, 0.0, 1.0);
 }
 "#;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GAUSSIAN BLUR — 9-tap separable (unrolled)
-// ─────────────────────────────────────────────────────────────────────────────
 
 const BLUR_FRAG: &str = r#"#version 100
 precision lowp float;
@@ -113,10 +117,6 @@ void main() {
     gl_FragColor = vec4(result, 1.0);
 }
 "#;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// COMBINE — additive bloom
-// ─────────────────────────────────────────────────────────────────────────────
 
 const COMBINE_FRAG: &str = r#"#version 100
 precision lowp float;
@@ -164,10 +164,19 @@ fn cam_for_target(target: Option<RenderTarget>, w: f32, h: f32) -> Camera2D {
 // MAIN
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Loop period for `a` such that the animation tiles perfectly.
-/// Period = 2π / (10 · ln2)
-/// Both sin and cos arguments advance by exactly 2π → seamless wrap.
-const A_LOOP_PERIOD: f64 = std::f64::consts::TAU / (10.0 * std::f64::consts::LN_2);
+// Phase rates (rad/s) — chosen so the overall loop tiles perfectly.
+//
+// a_phase   advances at A_PHASE_RATE  = 5·ln2 rad/s
+// zoom_phase advances at ZOOM_PHASE_RATE = 10·ln2 rad/s  (2× a_phase)
+//
+// Loop period = 2π / (5·ln2) ≈ 1.81 seconds.
+// At that point:  a_phase has done 1 full 2π cycle,
+//                 zoom_phase has done 2 full 2π cycles.
+// → both sin and cos return to their starting values → seamless.
+
+const A_PHASE_RATE: f64 = 5.0 * std::f64::consts::LN_2;     // ≈ 3.466 rad/s
+const ZOOM_PHASE_RATE: f64 = 10.0 * std::f64::consts::LN_2;  // ≈ 6.931 rad/s
+const LOOP_PERIOD: f64 = std::f64::consts::TAU / A_PHASE_RATE; // ≈ 1.813 s
 
 #[macroquad::main(window_conf)]
 async fn main() {
@@ -176,15 +185,18 @@ async fn main() {
     let width = w as f64;
     let height = h as f64;
 
-    // We no longer zoom continuously — the zoom caused the coord range to
-    // shrink toward zero which also lost precision. Instead, keep a fixed
-    // view and let the shader animation do all the visual movement.
-    // If you still want zoom, you can re-enable it; the shader math itself
-    // is now precision-safe regardless.
-    let mut scale = 20f64;
-    let mut x_center = 0f64;
-    let mut y_center = 0f64;
-    let mut a: f64 = 0.0;
+    // Fixed coordinate window — NEVER changes from zoom.
+    // This is the entire source of the precision fix.
+    let initial_scale = 20.0f64;
+    let half_extent_x = (width  / initial_scale / 2.0) as f32;
+    let half_extent_y = (height / initial_scale / 2.0) as f32;
+
+    // Panning (can still be changed by mouse)
+    let mut center_x: f64 = 0.0;
+    let mut center_y: f64 = 0.0;
+
+    // Single time accumulator — everything derives from this
+    let mut time: f64 = 0.0;
     let mut hue_shift: f32 = 0.0;
 
     // ── Render targets ──────────────────────────────────────────────────
@@ -205,10 +217,11 @@ async fn main() {
         ShaderSource::Glsl { vertex: VERTEX, fragment: SCENE_FRAG },
         MaterialParams {
             uniforms: vec![
-                UniformDesc::new("coord_min",  UniformType::Float2),
-                UniformDesc::new("coord_max",  UniformType::Float2),
-                UniformDesc::new("a_phase",    UniformType::Float1),
-                UniformDesc::new("hue_shift",  UniformType::Float1),
+                UniformDesc::new("center",      UniformType::Float2),
+                UniformDesc::new("half_extent", UniformType::Float2),
+                UniformDesc::new("a_phase",     UniformType::Float1),
+                UniformDesc::new("zoom_phase",  UniformType::Float1),
+                UniformDesc::new("hue_shift",   UniformType::Float1),
             ],
             ..Default::default()
         },
@@ -242,6 +255,7 @@ async fn main() {
     // ── Tuning ──────────────────────────────────────────────────────────
     bright_mat.set_uniform("threshold", 0.1f32);
     combine_mat.set_uniform("bloom_intensity", 0.5f32);
+    scene_mat.set_uniform("half_extent", vec2(half_extent_x, half_extent_y));
     let blur_passes: u32 = 4;
 
     let dir_h = vec2(1.0 / blur_w as f32, 0.0);
@@ -254,49 +268,28 @@ async fn main() {
     loop {
         let dt = get_frame_time() as f64;
 
-        // ── Animation ───────────────────────────────────────────────────
+        // ── Advance time and wrap at loop period ────────────────────────
+        time += dt;
+        time %= LOOP_PERIOD; // wraps every ≈1.81s — prevents drift forever
+
         hue_shift += 0.05 * dt as f32;
-        if hue_shift > 1.0 { hue_shift -= 1.0; }
+        if hue_shift >= 1.0 { hue_shift -= 1.0; }
 
-        // Advance and wrap `a` so it loops seamlessly forever
-        a += 0.5 * dt;
-        a %= A_LOOP_PERIOD; // wraps at ≈0.9065 — the pattern tiles exactly
-
-        // Optional continuous zoom (comment out if you want a fixed view)
-        if scale >= 1.0 {
-            scale += scale * dt;
-            // Wrap scale to prevent it from going to infinity.
-            // Since the shader pattern is self-similar under the exp2 zoom,
-            // we can reset scale after it doubles (the pattern repeats).
-            // scale doubles when: scale * 2^(dt_total) = 2 * scale_start
-            // But simpler: the visual pattern repeats with period A_LOOP_PERIOD
-            // in `a`, so we can just reset scale in sync.
-        } else {
-            scale = 1.0;
-        }
-
-        // ── Input ───────────────────────────────────────────────────────
+        // ── Input (panning) ─────────────────────────────────────────────
         if is_mouse_button_down(MouseButton::Left) {
             let md = mouse_delta_position();
-            x_center += md.x as f64 / scale * width  * 0.5;
-            y_center -= md.y as f64 / scale * height * 0.5;
+            center_x += md.x as f64 / initial_scale * width  * 0.5;
+            center_y -= md.y as f64 / initial_scale * height * 0.5;
         }
 
-        let half_w = width  / scale * 0.5;
-        let half_h = height / scale * 0.5;
-        let min_x = (x_center - half_w) as f32;
-        let min_y = (y_center - half_h) as f32;
-        let max_x = (x_center + half_w) as f32;
-        let max_y = (y_center + half_h) as f32;
-
-        // Pre-compute a_phase = a * ln(2) * 10, wrapped to [0, 2π]
-        // (a is already wrapped mod A_LOOP_PERIOD, so a_phase ∈ [0, 2π) automatically)
-        let a_phase = (a * std::f64::consts::LN_2 * 10.0) as f32;
+        // ── Compute phases from time (all f64, wrap to [0,2π), then f32) ─
+        let a_phase    = (time * A_PHASE_RATE    % std::f64::consts::TAU) as f32;
+        let zoom_phase = (time * ZOOM_PHASE_RATE % std::f64::consts::TAU) as f32;
 
         // ── Pass 1: Scene (GPU) ─────────────────────────────────────────
-        scene_mat.set_uniform("coord_min", vec2(min_x, min_y));
-        scene_mat.set_uniform("coord_max", vec2(max_x, max_y));
+        scene_mat.set_uniform("center", vec2(center_x as f32, center_y as f32));
         scene_mat.set_uniform("a_phase", a_phase);
+        scene_mat.set_uniform("zoom_phase", zoom_phase);
         scene_mat.set_uniform("hue_shift", hue_shift);
 
         set_camera(&cam_for_target(Some(scene_target.clone()), w, h));
