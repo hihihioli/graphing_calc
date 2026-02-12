@@ -72,18 +72,18 @@ async fn main() {
     loop {
         //handle zoom
         let delta_time = get_frame_time() as f64;
-        let mouse_x = mouse_position_local().x as f64 * width / 2.0 / scale + x_center;
-        let mouse_y = mouse_position_local().y as f64 * height / 2.0 / scale * -1f64 + y_center;
+        let mouse_x = 0 as f64 * width / 2.0 / scale + x_center;
+        let mouse_y = 0 as f64 * height / 2.0 / scale * -1f64 + y_center;
         
-        if mouse_wheel().1 != 0.0 {
-            let delta_scale = scale * mouse_wheel().1 as f64 * delta_time * 0.1;
+        if 1.0 != 0.0 {
+            let delta_scale = scale * 10 as f64 * delta_time * 0.1;
             if scale >= 1f64 {
                 scale += delta_scale;
             } else {
                 scale = 1f64;
             }
-            x_center = mouse_x - mouse_position_local().x as f64 * width / 2.0 / scale;
-            y_center = mouse_y - mouse_position_local().y as f64 * height / 2.0 / scale * -1.0;
+            x_center = mouse_x - 0f64 * width / 2.0 / scale;
+            y_center = mouse_y - 0 as f64 * height / 2.0 / scale * -1.0;
             needs_redraw = true;
         }
 
@@ -167,7 +167,7 @@ async fn main() {
         let yc_pix = height / 2.0 - (-1.0 * y_center * scale);
         let xc_pix = width / 2.0 - (x_center * scale);
 
-        //y-axis
+        /*//y-axis
         draw_line(
             xc_pix as f32,
             0f32,
@@ -231,10 +231,10 @@ async fn main() {
                 1f32,
                 axis_color,
             );
-        }
+        }*/
 
-        draw_text_in_corner(&max, &min, &scale,&mouse_x,&mouse_y,&x_center,&y_center); //draw text
-        
+        //draw_text_in_corner(&max, &min, &scale,&(mouse_position_local().x as f64),&(mouse_position_local().y as f64),&x_center,&y_center); //draw text
+        draw_fps();
 
         next_frame().await //draw the frame I think
     }
