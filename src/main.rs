@@ -4,297 +4,212 @@ use rayon::prelude::*;
 use std::default::Default;
 
 fn window_conf() -> Conf {
-    //the config for the main window
     Conf {
         window_title: "Main Window".to_string(),
-        high_dpi: true,
+        high_dpi: false,
         fullscreen: true,
         ..Default::default()
     }
 }
-fn F(x: f64, y: f64) -> f64 {
-    // y-(x+4.0)*(x-3.0)*(x-3.0)*(x+1.0)*(x+1.0)*(x+1.0)
-    // let sx = x.sin();
-    // let sy = y.sin();
-    // sx*sy
-    //sx * sx + cy * cy - 1_f64
-    // x*x*x*x - 2.0 * x*x*x - 15.0 * x*x - y
-    // x.sqrt() - y
-    // x.ln() - y
-    // (x*x).sin()*(y*y).sin()
-    //x.sin()+y.sin()-(x*y).sin() //polka-dot
-    0.1*(y.abs().ln()/0.1).sin()-0.1*(x.abs().ln()/0.1).cos()
-    // (x/5.0).sin()*(y/5.0).sin()-0.7
-    //(PI * x / 2.0).cos().powf(0.86016)+(PI * y / 2.0).cos().powf(0.86016)-1.0
-    // x.cos().powf(10.0)+y.cos().powf(10.0)-1.0
-    // x.sin()*y.sin()*x*x*y*y/(x/y).cos()*(x*y).sin() //wird
-    // x*x+y*y-2.0
-    // (x * x).sin() + (y * y).sin() // - 1f64
-    // x * x - y
-    // x*x+y*y-1f32
-    // 3.0 * y.sqrt() - x - 2.0
-    // y*x
-    // x.sin()-y
-    // x*x*x*x*x+7f64*x*x*x+148f64*x*x+y*x+1f64
-    // 2.8 * x
-    //     * x
-    //     * (x * x * (2.5 * x * x + y * y - 2f64)
-    //         + 1.2 * y * y * (y * (3f64 * y - 0.75) - 6.0311)
-    //         + 3.09)
-    //     + 0.98 * y * y * ((y * y - 3.01) * y * y + 3f64)
-    //     - 1.005 //dont show in class
+
+#[inline(always)]
+fn F(x: f32, y: f32) -> f32 {
+    const SCALE: f32 = 0.1;
+    const INV_SCALE: f32 = 10.0;
+    SCALE * (y.abs().ln() * INV_SCALE).sin() - SCALE * (x.abs().ln() * INV_SCALE).cos()
 }
-#[macroquad::main(window_conf)] //pass with config in
+
+// Glow/bloom effect - samples surrounding pixels
+#[inline(always)]
+fn apply_glow(x: usize, y: usize, img_data: &[[u8; 4]], width: usize, height: usize, radius: i32) -> [u8; 4] {
+    let mut r = 0.0f32;
+    let mut g = 0.0f32;
+    let mut b = 0.0f32;
+    let mut count = 0.0f32;
+    
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let nx = x as i32 + dx;
+            let ny = y as i32 + dy;
+            if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
+                let idx = ny as usize * width + nx as usize;
+                let pixel = img_data[idx];
+                let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                let weight = (-dist * 0.5).exp();
+                r += pixel[0] as f32 * weight;
+                g += pixel[1] as f32 * weight;
+                b += pixel[2] as f32 * weight;
+                count += weight;
+            }
+        }
+    }
+    
+    [(r / count) as u8, (g / count) as u8, (b / count) as u8, 255]
+}
+
+#[macroquad::main(window_conf)]
 async fn main() {
-    //todo: fix coordinate system
-    let (width, height) = (screen_width() as f64, screen_height() as f64);
-    let mut scale = 20f64;
-    let mut max: (f64, f64);
-    let mut min: (f64, f64);
-    let dpi_scale = screen_dpi_scale() as f64;
-    let mut x_center = 0f64;
-    let mut y_center = 0f64;
-    // Track state for conditional redrawing
-    let mut last_scale = scale;
-    let mut last_x_center = x_center;
-    let mut last_y_center = y_center;
-    let mut needs_redraw = true;
-    // Physical pixel dimensions for high-res rendering
+    // Effect toggles
+    let mut glow_enabled = false;
+    let mut chromatic_aberration = false;
+    let mut scanlines = false;
+    let mut vignette = true;
+    let mut scale = 20.0f32;
+    
+    // Wait until window is properly initialized with valid dimensions
+    loop {
+        next_frame().await;
+        let w = screen_width();
+        let h = screen_height();
+        if w > 0.0 && h > 0.0 {
+            let test_img_w = (w * 1.0) as u16;
+            let test_img_h = (h * 1.0) as u16;
+            if test_img_w > 0 && test_img_h > 0 {
+                break;
+            }
+        }
+    }
+    
+    let (width, height) = (screen_width() as f32, screen_height() as f32);
+    
+    // Safety check - ensure dimensions are valid
+    if width <= 0.0 || height <= 0.0 {
+        panic!("Invalid screen dimensions: {}x{}", width, height);
+    }
+    
+    let dpi_scale = 1.0f32;
     let (img_width, img_height) = ((width * dpi_scale) as u16, (height * dpi_scale) as u16);
-    let mut img = Image::gen_image_color(
-        img_width,
-        img_height,
-        BLACK,
-    ); //an image to manipulate
-    let mut tex = Texture2D::from_image(&img); // reserve memory in the gpu
-    let axis_color: Color = GOLD;
+    
+    // Additional safety check for integer dimensions
+    if img_width == 0 || img_height == 0 {
+        panic!("Invalid image dimensions after conversion: {}x{}", img_width, img_height);
+    }
+    
+    let inv_dpi = 1.0 / dpi_scale;
+    let inv_width = 1.0 / width;
+    let inv_height = 1.0 / height;
+    
+    let mut img = Image::gen_image_color(img_width, img_height, BLACK);
+    let tex = Texture2D::from_image(&img);
+    
+    // Pre-compute vignette lookup table for optimization
+    // Cast to usize before multiplying to prevent u16 overflow
+    let mut vignette_lut = vec![1.0f32; img_width as usize * img_height as usize];
+    for y in 0..img_height as usize {
+        let t_y = (y as f32 * inv_dpi) * inv_height;
+        let dy = t_y - 0.5;
+        for x in 0..img_width as usize {
+            let t_x = (x as f32 * inv_dpi) * inv_width;
+            let dx = t_x - 0.5;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let idx = y * img_width as usize + x;
+            vignette_lut[idx] = 1.0 - (dist * 1.5).min(1.0);
+        }
+    }
 
     loop {
-        //handle zoom
-        let delta_time = get_frame_time() as f64;
-        let mouse_x = 0 as f64 * width / 2.0 / scale + x_center;
-        let mouse_y = 0 as f64 * height / 2.0 / scale * -1f64 + y_center;
+        let delta_time = get_frame_time();
+        scale += scale * delta_time;
         
-        if 1.0 != 0.0 {
-            let delta_scale = scale * 10 as f64 * delta_time * 0.1;
-            if scale >= 1f64 {
-                scale += delta_scale;
-            } else {
-                scale = 1f64;
-            }
-            x_center = mouse_x - 0f64 * width / 2.0 / scale;
-            y_center = mouse_y - 0 as f64 * height / 2.0 / scale * -1.0;
-            needs_redraw = true;
-        }
-
-        //handle movement
-        if is_mouse_button_down(MouseButton::Left) {
-            //mouse movements
-            let mouse_delta = mouse_delta_position();
-            x_center += mouse_delta.x as f64 / scale * width / 2.0;
-            y_center -= mouse_delta.y as f64 / scale * height / 2.0;
-            needs_redraw = true;
-        }
-        max = (
-            width / scale / 2.0 + x_center,
-            height / scale / 2.0 + y_center,
-        );
-        min = (
-            -1.0 * width / scale / 2.0 + x_center,
-            -1.0 * height / scale / 2.0 + y_center,
-        );
-
-        // Only redraw if something changed
-        if needs_redraw || scale != last_scale || x_center != last_x_center || y_center != last_y_center {
-            // No need to resize - always using same DPI
-            
-            //Start doing the graphing fr - using parallel processing
-            let img_data = img.get_image_data_mut();
-            img_data.par_chunks_mut(img_width as usize)
-                .enumerate()
-                .for_each(|(y_pixel, row)| {
-                let yp = y_pixel as f64 / dpi_scale;
-                let t_y = yp / height;
-                let y_coord: f64 = max.1 + t_y * (min.1 - max.1);
+        // Toggle effects with keys
+        if is_key_pressed(macroquad::prelude::KeyCode::Key1) { glow_enabled = !glow_enabled; }
+        if is_key_pressed(macroquad::prelude::KeyCode::Key2) { chromatic_aberration = !chromatic_aberration; }
+        if is_key_pressed(macroquad::prelude::KeyCode::Key3) { scanlines = !scanlines; }
+        if is_key_pressed(macroquad::prelude::KeyCode::Key4) { vignette = !vignette; }
+        
+        let inv_scale = 1.0 / scale;
+        let half_width_scaled = width * inv_scale * 0.5;
+        let half_height_scaled = height * inv_scale * 0.5;
+        let range_x = half_width_scaled * 2.0;
+        let range_y = -half_height_scaled * 2.0;
+        
+        let img_data = img.get_image_data_mut();
+        img_data.par_chunks_mut(img_width as usize)
+            .enumerate()
+            .for_each(|(y_pixel, row)| {
+                let yp = y_pixel as f32 * inv_dpi;
+                let t_y = yp * inv_height;
+                let y_coord = half_height_scaled + t_y * range_y;
                 
                 for x_pixel in 0..img_width as usize {
-                    let xp = x_pixel as f64 / dpi_scale;
-                    let t_x = xp / width;
-                    let x_coord: f64 = min.0 + t_x * (max.0 - min.0);
+                    let xp = x_pixel as f32 * inv_dpi;
+                    let t_x = xp * inv_width;
+                    let x_coord = -half_width_scaled + t_x * range_x;
 
                     let val = F(x_coord, y_coord);
-                    // Use exp2 instead of powf for better performance
-                    let intensity = (-val.abs()).exp2() as f32;
+                    let abs_val = val.abs();
+                    let intensity = (-abs_val).exp2();
                     
-                    let color = if sign(val) < 0 {
-                        Color {
-                            r: 0f32,
-                            g: 0f32,
-                            b: intensity,
-                            a: 1f32,
-                        }
+                    let color = if val < 0.0 {
+                        Color { r: 0.0, g: 0.0, b: intensity, a: 1.0 }
                     } else {
-                        Color {
-                            r: intensity,
-                            g: 0f32,
-                            b: 0f32,
-                            a: 1f32,
-                        }
+                        Color { r: intensity, g: 0.0, b: 0.0, a: 1.0 }
                     };
+                    
                     row[x_pixel] = color.into();
                 }
             });
+        
+        // Apply vignette after parallel processing for better performance
+        if vignette {
+            let img_data = img.get_image_data_mut();
+            for y in 0..img_height as usize {
+                for x in 0..img_width as usize {
+                    let idx = y * img_width as usize + x;
+                    let vignette_strength = vignette_lut[idx];
+                    let pixel = &mut img_data[idx];
+                    pixel[0] = (pixel[0] as f32 * vignette_strength) as u8;
+                    pixel[1] = (pixel[1] as f32 * vignette_strength) as u8;
+                    pixel[2] = (pixel[2] as f32 * vignette_strength) as u8;
+                }
+            }
+        }
+        
+        // Apply glow (slower, best as optional)
+        if glow_enabled {
+            let img_data_copy: Vec<[u8; 4]> = img.get_image_data().to_vec();
+            let img_data = img.get_image_data_mut();
+            for y in 0..img_height as usize {
+                for x in 0..img_width as usize {
+                    let idx = y * img_width as usize + x;
+                    img_data[idx] = apply_glow(x, y, &img_data_copy, img_width as usize, img_height as usize, 2);
+                }
+            }
+        }
+        
+        tex.update(&img);
+        
+        // Chromatic aberration effect - creates color fringing by drawing shifted copies
+        if chromatic_aberration {
+            let offset = 0.005 * width;
             
-            tex.update(&img);
+            // Draw main texture at center with full brightness
+            draw_texture_ex(&tex, 0.0, 0.0, WHITE, 
+                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
             
-            // Update state tracking
-            last_scale = scale;
-            last_x_center = x_center;
-            last_y_center = y_center;
-            needs_redraw = false;
+            // Draw semi-transparent copy shifted right (creates red fringe on right edge)
+            draw_texture_ex(&tex, offset, 0.0, Color::new(1.0, 1.0, 1.0, 0.2), 
+                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
+            
+            // Draw semi-transparent copy shifted left (creates blue fringe on left edge)
+            draw_texture_ex(&tex, -offset, 0.0, Color::new(1.0, 1.0, 1.0, 0.2), 
+                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
+        } else {
+            // Normal rendering without chromatic aberration
+            draw_texture_ex(&tex, 0.0, 0.0, WHITE, 
+                DrawTextureParams { dest_size: Some(vec2(width, height)), ..Default::default() });
         }
-        draw_texture_ex(
-            &tex,
-            0f32,
-            0f32,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(width as f32, height as f32)),
-                ..Default::default()
-            },
-        );
-
-        let yc_pix = height / 2.0 - (-1.0 * y_center * scale);
-        let xc_pix = width / 2.0 - (x_center * scale);
-
-        /*//y-axis
-        draw_line(
-            xc_pix as f32,
-            0f32,
-            xc_pix as f32,
-            height as f32,
-            1f32,
-            axis_color,
-        );
-        //draw the tick marks
-        for i in 0..((height - yc_pix) / scale + 1f64) as i32 {
-            //down
-            draw_line(
-                (xc_pix + 3f64) as f32,
-                (i as f64 * scale + yc_pix) as f32,
-                xc_pix as f32 - 3f32,
-                (i as f64 * scale + yc_pix) as f32,
-                1f32,
-                axis_color,
-            );
+        
+        // Scanlines overlay
+        if scanlines {
+            for y in (0..height as i32).step_by(4) {
+                draw_line(0.0, y as f32, width, y as f32, 1.0, Color::new(0.0, 0.0, 0.0, 0.3));
+            }
         }
-        for i in 0..(yc_pix / scale + 1f64) as i32 {
-            //up
-            draw_line(
-                (xc_pix + 3f64) as f32,
-                (-1f64 * i as f64 * scale + yc_pix) as f32,
-                (xc_pix - 3f64) as f32,
-                (-1f64 * i as f64 * scale + yc_pix) as f32,
-                1f32,
-                axis_color,
-            );
-        }
-
-        //x-axis
-        draw_line(
-            0f32,
-            yc_pix as f32,
-            width as f32,
-            yc_pix as f32,
-            1f32,
-            axis_color,
-        ); //x-axis
-        //draw the tick marks
-        for i in 0..((width - xc_pix) / scale + 1f64) as i32 {
-            //right
-            draw_line(
-                (i as f64 * scale + xc_pix) as f32,
-                (yc_pix + 3f64) as f32,
-                (i as f64 * scale + xc_pix) as f32,
-                (yc_pix - 3f64) as f32,
-                1f32,
-                axis_color,
-            );
-        }
-        for i in 0..(xc_pix / scale + 1f64) as i32 {
-            //left
-            draw_line(
-                (-1f64 * i as f64 * scale + xc_pix) as f32,
-                (yc_pix + 3f64) as f32,
-                (-1f64 * i as f64 * scale + xc_pix) as f32,
-                (yc_pix - 3f64) as f32,
-                1f32,
-                axis_color,
-            );
-        }*/
-
-        //draw_text_in_corner(&max, &min, &scale,&(mouse_position_local().x as f64),&(mouse_position_local().y as f64),&x_center,&y_center); //draw text
+        
+        draw_text("1:Glow 2:ChromaAb 3:Scanlines 4:Vignette", 10.0, 30.0, 20.0, WHITE);
         draw_fps();
 
-        next_frame().await //draw the frame I think
+        next_frame().await
     }
-}
-
-fn sign(v: f64) -> i8 {
-    if v > 0.0 {
-        1
-    } else if v < 0.0 {
-        -1
-    } else {
-        0
-    } // treat exact (or near) zero separately if you like
-}
-
-fn draw_text_in_corner(corner1: &(f64, f64), corner2: &(f64, f64), scale: &f64,mouse_x:&f64,mouse_y:&f64,x_center:&f64,y_center:&f64) {
-    draw_fps(); //todo: draw above graph but semi-transparent
-    draw_text(
-        format!("{},{}", corner1.0, corner1.1).as_str(),
-        10.0,
-        35.0,
-        25.0,
-        WHITE,
-    );
-    draw_text(
-        format!("{},{}", corner2.0, corner2.1).as_str(),
-        10.0,
-        55.0,
-        25.0,
-        WHITE,
-    );
-    draw_text(
-        format!("{},{}, scale: {}", screen_width(), screen_height(), scale).as_str(),
-        10.0,
-        75.0,
-        25.0,
-        WHITE,
-    );
-    draw_text(
-        format!(
-            "Mouse:{},{}",
-            mouse_x,
-            mouse_y
-        )
-            .as_str(),
-        10.0,
-        95.0,
-        25.0,
-        WHITE,
-    );
-    draw_text(
-        format!(
-            "Center:{},{}",
-            x_center,
-            y_center
-        )
-            .as_str(),
-        10.0,
-        115.0,
-        25.0,
-        WHITE,
-    );
 }

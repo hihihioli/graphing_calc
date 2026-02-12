@@ -7,6 +7,12 @@ edition = "2024"
 macroquad = "0.4.14"
 rayon = "1.8"
 
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
 [package.metadata.bundle]
 name = "Graphing Calculator"
 identifier = "com.twidilers.hihihioli.graping_calc"
