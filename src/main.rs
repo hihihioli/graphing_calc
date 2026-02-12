@@ -1,15 +1,14 @@
 use macroquad::prelude::*;
 pub use macroquad::ui::*;
+use rayon::prelude::*;
 use std::default::Default;
-use std::thread::yield_now;
-use std::f64::consts::PI;
 
 fn window_conf() -> Conf {
     //the config for the main window
     Conf {
         window_title: "Main Window".to_string(),
         high_dpi: true,
-        fullscreen: false,
+        fullscreen: true,
         ..Default::default()
     }
 }
@@ -22,8 +21,9 @@ fn F(x: f64, y: f64) -> f64 {
     // x*x*x*x - 2.0 * x*x*x - 15.0 * x*x - y
     // x.sqrt() - y
     // x.ln() - y
-     (x*x).sin()*(y*y).sin()
+    // (x*x).sin()*(y*y).sin()
     //x.sin()+y.sin()-(x*y).sin() //polka-dot
+    0.1*(y.abs().ln()/0.1).sin()-0.1*(x.abs().ln()/0.1).cos()
     // (x/5.0).sin()*(y/5.0).sin()-0.7
     //(PI * x / 2.0).cos().powf(0.86016)+(PI * y / 2.0).cos().powf(0.86016)-1.0
     // x.cos().powf(10.0)+y.cos().powf(10.0)-1.0
@@ -54,6 +54,11 @@ async fn main() {
     let dpi_scale = screen_dpi_scale() as f64;
     let mut x_center = 0f64;
     let mut y_center = 0f64;
+    // Track state for conditional redrawing
+    let mut last_scale = scale;
+    let mut last_x_center = x_center;
+    let mut last_y_center = y_center;
+    let mut needs_redraw = true;
     // Physical pixel dimensions for high-res rendering
     let (img_width, img_height) = ((width * dpi_scale) as u16, (height * dpi_scale) as u16);
     let mut img = Image::gen_image_color(
@@ -69,6 +74,7 @@ async fn main() {
         let delta_time = get_frame_time() as f64;
         let mouse_x = mouse_position_local().x as f64 * width / 2.0 / scale + x_center;
         let mouse_y = mouse_position_local().y as f64 * height / 2.0 / scale * -1f64 + y_center;
+        
         if mouse_wheel().1 != 0.0 {
             let delta_scale = scale * mouse_wheel().1 as f64 * delta_time * 0.1;
             if scale >= 1f64 {
@@ -78,6 +84,7 @@ async fn main() {
             }
             x_center = mouse_x - mouse_position_local().x as f64 * width / 2.0 / scale;
             y_center = mouse_y - mouse_position_local().y as f64 * height / 2.0 / scale * -1.0;
+            needs_redraw = true;
         }
 
         //handle movement
@@ -86,6 +93,7 @@ async fn main() {
             let mouse_delta = mouse_delta_position();
             x_center += mouse_delta.x as f64 / scale * width / 2.0;
             y_center -= mouse_delta.y as f64 / scale * height / 2.0;
+            needs_redraw = true;
         }
         max = (
             width / scale / 2.0 + x_center,
@@ -96,57 +104,55 @@ async fn main() {
             -1.0 * height / scale / 2.0 + y_center,
         );
 
-        //Start doing the graphing fr
-        for y_pixel in 0..img_height as i32 {
-            let yp = y_pixel as f64 / dpi_scale;
-            let t_y = yp / height;
-            let y_coord: f64 = max.1 + t_y * (min.1 - max.1);
-            for x_pixel in 0..img_width as i32 {
-                let xp = x_pixel as f64 / dpi_scale;
-                let t_x = xp / width;
-                let x_coord: f64 = min.0 + t_x * (max.0 - min.0);
+        // Only redraw if something changed
+        if needs_redraw || scale != last_scale || x_center != last_x_center || y_center != last_y_center {
+            // No need to resize - always using same DPI
+            
+            //Start doing the graphing fr - using parallel processing
+            let img_data = img.get_image_data_mut();
+            img_data.par_chunks_mut(img_width as usize)
+                .enumerate()
+                .for_each(|(y_pixel, row)| {
+                let yp = y_pixel as f64 / dpi_scale;
+                let t_y = yp / height;
+                let y_coord: f64 = max.1 + t_y * (min.1 - max.1);
+                
+                for x_pixel in 0..img_width as usize {
+                    let xp = x_pixel as f64 / dpi_scale;
+                    let t_x = xp / width;
+                    let x_coord: f64 = min.0 + t_x * (max.0 - min.0);
 
-                let val = F(x_coord, y_coord);
-                if sign(val) < 0 {
-                    let color = Color {
-                        r: 0f32,
-                        g: 0f32,
-                        b: 2f64.powf(val.abs() * -1f64) as f32,
-                        a: 1f32,
+                    let val = F(x_coord, y_coord);
+                    // Use exp2 instead of powf for better performance
+                    let intensity = (-val.abs()).exp2() as f32;
+                    
+                    let color = if sign(val) < 0 {
+                        Color {
+                            r: 0f32,
+                            g: 0f32,
+                            b: intensity,
+                            a: 1f32,
+                        }
+                    } else {
+                        Color {
+                            r: intensity,
+                            g: 0f32,
+                            b: 0f32,
+                            a: 1f32,
+                        }
                     };
-                    img.set_pixel(x_pixel as u32, y_pixel as u32, color)
-                } else {
-                    let color = Color {
-                        b: 0f32,
-                        g: 0f32,
-                        r: 2f64.powf(val.abs() * -1f64) as f32,
-                        a: 1f32,
-                    };
-                    img.set_pixel(x_pixel as u32, y_pixel as u32, color)
+                    row[x_pixel] = color.into();
                 }
-
-                // let val = F(x_coord, y_coord);
-                // let up = F(x_coord, y_coord + dy);
-                // let down = F(x_coord, y_coord - dy);
-                // let left = F(x_coord - dx, y_coord);
-                // let right = F(x_coord + dx, y_coord);
-                //
-                // let valsign = sign(val);
-                //
-                // if (valsign != sign(up))
-                //     || (valsign != sign(down))
-                //     || (valsign != sign(left))
-                //     || (valsign != sign(right))
-                // {
-                //     img.set_pixel(
-                //         x_pixel as u32,
-                //         y_pixel as u32,
-                //         BLUE,
-                //     );
-                // }
-            }
+            });
+            
+            tex.update(&img);
+            
+            // Update state tracking
+            last_scale = scale;
+            last_x_center = x_center;
+            last_y_center = y_center;
+            needs_redraw = false;
         }
-        tex.update(&img);
         draw_texture_ex(
             &tex,
             0f32,
