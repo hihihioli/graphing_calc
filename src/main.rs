@@ -31,6 +31,7 @@ uniform vec2 half_extent;
 uniform float a_phase;
 uniform float zoom_phase;
 uniform float hue_shift;
+uniform float hue_shift_2;
 
 vec3 hsl2rgb(float h, float s, float l) {
     float c = (1.0 - abs(2.0 * l - 1.0)) * s;
@@ -61,7 +62,7 @@ void main() {
 
     float hue = val < 0.0
         ? mod(hue_shift, 1.0)
-        : mod(hue_shift + 0.5, 1.0);
+        : mod(hue_shift_2, 1.0);
 
     gl_FragColor = vec4(hsl2rgb(hue, 1.0, intensity * 0.5), 1.0);
 }
@@ -174,6 +175,7 @@ async fn main() {
     let mut center_y: f64 = 0.0;
     let mut time: f64 = 0.0;
     let mut hue_shift: f32 = 0.0;
+    let mut hue_shift_2: f32 = 0.5;
 
     // ── Render targets ──────────────────────────────────────────────────
     let scene_target = render_target(w as u32, h as u32);
@@ -203,6 +205,7 @@ async fn main() {
                 UniformDesc::new("a_phase",     UniformType::Float1),
                 UniformDesc::new("zoom_phase",  UniformType::Float1),
                 UniformDesc::new("hue_shift",   UniformType::Float1),
+                UniformDesc::new("hue_shift_2", UniformType::Float1),
             ],
             ..Default::default()
         },
@@ -261,6 +264,9 @@ async fn main() {
         hue_shift += 0.05 * dt as f32;
         if hue_shift >= 1.0 { hue_shift -= 1.0; }
 
+        hue_shift_2 += 0.07 * dt as f32;
+        if hue_shift_2 >= 1.0 { hue_shift_2 -= 1.0; }
+
         // ── Input ───────────────────────────────────────────────────────
         if is_mouse_button_down(MouseButton::Left) {
             let md = mouse_delta_position();
@@ -276,6 +282,7 @@ async fn main() {
         scene_mat.set_uniform("a_phase", a_phase);
         scene_mat.set_uniform("zoom_phase", zoom_phase);
         scene_mat.set_uniform("hue_shift", hue_shift);
+        scene_mat.set_uniform("hue_shift_2", hue_shift_2);
 
         set_camera(&cam_for_target(Some(scene_target.clone()), w, h));
         gl_use_material(&scene_mat);
