@@ -34,6 +34,7 @@ uniform float hue_shift;
 uniform float color_static;
 uniform float static_hue_neg;
 uniform float static_hue_pos;
+uniform float hue_shift_2;
 
 vec3 hsl2rgb(float h, float s, float l) {
     float c = (1.0 - abs(2.0 * l - 1.0)) * s;
@@ -64,7 +65,7 @@ void main() {
 
     float hue = val < 0.0
         ? mod(hue_shift, 1.0)
-        : mod(hue_shift + 0.5, 1.0);
+        : mod(hue_shift_2, 1.0);
     if (color_static > 0.5) {
         hue = val < 0.0 ? static_hue_neg : static_hue_pos;
     }
@@ -193,6 +194,7 @@ async fn main() {
     let mut center_y: f64 = 0.0;
     let mut time: f64 = 0.0;
     let mut hue_shift: f32 = 0.0;
+    let mut hue_shift_2: f32 = 0.5;
     let mut dragging = false;
     let mut last_mouse = vec2(0.0, 0.0);
     let mut color_static = false;
@@ -228,6 +230,8 @@ async fn main() {
                 UniformDesc::new("color_static", UniformType::Float1),
                 UniformDesc::new("static_hue_neg", UniformType::Float1),
                 UniformDesc::new("static_hue_pos", UniformType::Float1),
+                UniformDesc::new("hue_shift_2", UniformType::Float1),
+                UniformDesc::new("hue_shift_2", UniformType::Float1),
             ],
             ..Default::default()
         },
@@ -301,6 +305,9 @@ async fn main() {
         hue_shift += 0.05 * dt as f32;
         if hue_shift >= 1.0 { hue_shift -= 1.0; }
 
+        hue_shift_2 += 0.07 * dt as f32;
+        if hue_shift_2 >= 1.0 { hue_shift_2 -= 1.0; }
+
         // ── Input ───────────────────────────────────────────────────────
         if is_key_pressed(KeyCode::T) {
             taa_enabled = !taa_enabled;
@@ -314,7 +321,6 @@ async fn main() {
         if is_key_pressed(KeyCode::B) {
             bloom_enabled = !bloom_enabled;
         }
-
         if is_mouse_button_down(MouseButton::Left) {
             let (mx, my) = mouse_position();
             let current = vec2(mx, my);
@@ -341,6 +347,8 @@ async fn main() {
         scene_mat.set_uniform("zoom_phase", zoom_phase);
         scene_mat.set_uniform("hue_shift", hue_shift);
         scene_mat.set_uniform("color_static", if color_static { 1.0f32 } else { 0.0f32 });
+        scene_mat.set_uniform("hue_shift_2", hue_shift_2);
+        scene_mat.set_uniform("hue_shift_2", hue_shift_2);
 
         set_camera(&cam_for_target(Some(scene_target.clone()), w, h));
         gl_use_material(&scene_mat);
