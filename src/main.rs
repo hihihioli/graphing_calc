@@ -121,6 +121,19 @@ void main() {
 }
 "#;
 
+const COMBINE_BLOOM_FRAG: &str = r#"#version 100
+precision lowp float;
+varying vec2 uv;
+uniform sampler2D Texture;
+uniform sampler2D _bloom_tex;
+uniform float bloom_intensity;
+void main() {
+    vec3 scene = texture2D(Texture, uv).rgb;
+    vec3 bloom = texture2D(_bloom_tex, uv).rgb;
+    gl_FragColor = vec4(scene + bloom * bloom_intensity, 1.0);
+}
+"#;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,6 +189,8 @@ async fn main() {
     let mut time: f64 = 0.0;
     let mut hue_shift: f32 = 0.0;
     let mut hue_shift_2: f32 = 0.5;
+    let mut dragging = false;
+    let mut last_mouse = vec2(0.0, 0.0);
 
     // ── Render targets ──────────────────────────────────────────────────
     let scene_target = render_target(w as u32, h as u32);
@@ -239,9 +254,19 @@ async fn main() {
         },
     ).unwrap();
 
+    let combine_bloom_mat = load_material(
+        ShaderSource::Glsl { vertex: VERTEX, fragment: COMBINE_BLOOM_FRAG },
+        MaterialParams {
+            uniforms: vec![UniformDesc::new("bloom_intensity", UniformType::Float1)],
+            textures: vec!["_bloom_tex".to_string()],
+            ..Default::default()
+        },
+    ).unwrap();
+
     // ── Tuning ──────────────────────────────────────────────────────────
     bright_mat.set_uniform("threshold", 0.1f32);
     combine_taa_mat.set_uniform("bloom_intensity", 0.5f32);
+    combine_bloom_mat.set_uniform("bloom_intensity", 0.5f32);
     scene_mat.set_uniform("half_extent", half_extent);
 
     let dir_h = vec2(1.0 / blur_w as f32, 0.0);
@@ -251,6 +276,7 @@ async fn main() {
 
     let dummy = Texture2D::from_image(&Image::gen_image_color(1, 1, WHITE));
     let mut first_frame = true;
+    let mut taa_enabled = false;
 
     let half_w = w / 2.0;
     let half_h = h / 2.0;
@@ -260,6 +286,7 @@ async fn main() {
     loop {
         let dt = get_frame_time() as f64;
         time += dt;
+        let mut camera_moved = false;
 
         hue_shift += 0.05 * dt as f32;
         if hue_shift >= 1.0 { hue_shift -= 1.0; }
@@ -268,10 +295,26 @@ async fn main() {
         if hue_shift_2 >= 1.0 { hue_shift_2 -= 1.0; }
 
         // ── Input ───────────────────────────────────────────────────────
+        if is_key_pressed(KeyCode::T) {
+            taa_enabled = !taa_enabled;
+            first_frame = true;
+        }
+
         if is_mouse_button_down(MouseButton::Left) {
-            let md = mouse_delta_position();
-            center_x += md.x as f64 / initial_scale * width * 0.5;
-            center_y -= md.y as f64 / initial_scale * height * 0.5;
+            let (mx, my) = mouse_position();
+            let current = vec2(mx, my);
+            if dragging {
+                let md = current - last_mouse;
+                if md.length() > 0.0 {
+                    center_x -= md.x as f64 / initial_scale;
+                    center_y += md.y as f64 / initial_scale;
+                    camera_moved = true;
+                }
+            }
+            last_mouse = current;
+            dragging = true;
+        } else {
+            dragging = false;
         }
 
         let a_phase    = (time * A_PHASE_RATE    % std::f64::consts::TAU) as f32;
@@ -313,14 +356,18 @@ async fn main() {
             src = &blur_pong.texture;
         }
 
-        // ── Pass 4: Combine bloom + TAA ─────────────────────────────────
-        let taa_alpha = if first_frame { 1.0f32 } else { 0.1f32 };
-        combine_taa_mat.set_uniform("taa_alpha", taa_alpha);
-        combine_taa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
-        combine_taa_mat.set_texture("_history_tex", taa_ping.texture.clone());
-
+        // ── Pass 4: Combine bloom + TAA (or bloom only) ─────────────────
         set_camera(&cam_for_target(Some(taa_pong.clone()), w, h));
-        gl_use_material(&combine_taa_mat);
+        if taa_enabled {
+            let taa_alpha = if first_frame || camera_moved { 1.0f32 } else { 0.1f32 };
+            combine_taa_mat.set_uniform("taa_alpha", taa_alpha);
+            combine_taa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+            combine_taa_mat.set_texture("_history_tex", taa_ping.texture.clone());
+            gl_use_material(&combine_taa_mat);
+        } else {
+            combine_bloom_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+            gl_use_material(&combine_bloom_mat);
+        }
         draw_fullscreen(&scene_target.texture, w, h);
         gl_use_default_material();
 
