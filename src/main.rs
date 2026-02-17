@@ -153,7 +153,7 @@ fn window_conf() -> Conf {
         window_title: "Graphing Calculator".to_string(),
         window_width: 1280,
         window_height: 720,
-        high_dpi: false,
+        high_dpi: true,
         fullscreen: false,
         ..Default::default()
     }
@@ -184,7 +184,8 @@ const ZOOM_PHASE_RATE: f64 = 10.0 * std::f64::consts::LN_2;
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    // Wait one frame for window to be properly initialized
+    // Wait a couple frames for window to be properly initialized at configured size
+    next_frame().await;
     next_frame().await;
     
     let w = screen_width();
@@ -216,7 +217,7 @@ async fn main() {
     let mut last_mouse = vec2(0.0, 0.0);
 
     // ── Render targets ──────────────────────────────────────────────────
-    let scene_target = render_target(w as u32, h as u32);
+    let mut scene_target = render_target(w as u32, h as u32);
     scene_target.texture.set_filter(FilterMode::Linear);
 
     let mut taa_ping = render_target(w as u32, h as u32);
@@ -224,11 +225,11 @@ async fn main() {
     taa_ping.texture.set_filter(FilterMode::Linear);
     taa_pong.texture.set_filter(FilterMode::Linear);
 
-    let blur_w = (w as u32) / 4;
-    let blur_h = (h as u32) / 4;
-    let bright_target = render_target(blur_w, blur_h);
-    let blur_ping = render_target(blur_w, blur_h);
-    let blur_pong = render_target(blur_w, blur_h);
+    let mut blur_w = (w as u32) / 4;
+    let mut blur_h = (h as u32) / 4;
+    let mut bright_target = render_target(blur_w, blur_h);
+    let mut blur_ping = render_target(blur_w, blur_h);
+    let mut blur_pong = render_target(blur_w, blur_h);
     bright_target.texture.set_filter(FilterMode::Linear);
     blur_ping.texture.set_filter(FilterMode::Linear);
     blur_pong.texture.set_filter(FilterMode::Linear);
@@ -298,10 +299,10 @@ async fn main() {
     scene_mat.set_uniform("static_hue_pos", 2.0f32 / 3.0f32);
     scene_mat.set_uniform("half_extent", half_extent);
 
-    let dir_h = vec2(1.0 / blur_w as f32, 0.0);
-    let dir_v = vec2(0.0, 1.0 / blur_h as f32);
-    let bw = blur_w as f32;
-    let bh = blur_h as f32;
+    let mut dir_h = vec2(1.0 / blur_w as f32, 0.0);
+    let mut dir_v = vec2(0.0, 1.0 / blur_h as f32);
+    let mut bw = blur_w as f32;
+    let mut bh = blur_h as f32;
 
     let dummy = Texture2D::from_image(&Image::gen_image_color(1, 1, WHITE));
     let mut first_frame = true;
@@ -322,6 +323,31 @@ async fn main() {
             current_h = new_h;
             half_w = new_w / 2.0;
             half_h = new_h / 2.0;
+            
+            // Recreate render targets at new size
+            scene_target = render_target(current_w as u32, current_h as u32);
+            scene_target.texture.set_filter(FilterMode::Linear);
+            
+            taa_ping = render_target(current_w as u32, current_h as u32);
+            taa_pong = render_target(current_w as u32, current_h as u32);
+            taa_ping.texture.set_filter(FilterMode::Linear);
+            taa_pong.texture.set_filter(FilterMode::Linear);
+            
+            blur_w = (current_w as u32) / 4;
+            blur_h = (current_h as u32) / 4;
+            bright_target = render_target(blur_w, blur_h);
+            blur_ping = render_target(blur_w, blur_h);
+            blur_pong = render_target(blur_w, blur_h);
+            bright_target.texture.set_filter(FilterMode::Linear);
+            blur_ping.texture.set_filter(FilterMode::Linear);
+            blur_pong.texture.set_filter(FilterMode::Linear);
+            
+            dir_h = vec2(1.0 / blur_w as f32, 0.0);
+            dir_v = vec2(0.0, 1.0 / blur_h as f32);
+            bw = blur_w as f32;
+            bh = blur_h as f32;
+            
+            first_frame = true;
         }
         
         let dt = get_frame_time() as f64;
