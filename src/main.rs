@@ -1,5 +1,9 @@
 use macroquad::prelude::*;
 use std::default::Default;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+mod ui_window;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED VERTEX SHADER
@@ -146,9 +150,11 @@ void main() {
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "Main Window".to_string(),
+        window_title: "Graphing Calculator".to_string(),
+        window_width: 1280,
+        window_height: 720,
         high_dpi: false,
-        fullscreen: true,
+        fullscreen: false,
         ..Default::default()
     }
 }
@@ -178,14 +184,25 @@ const ZOOM_PHASE_RATE: f64 = 10.0 * std::f64::consts::LN_2;
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    // Wait one frame for window to be properly initialized
+    next_frame().await;
+    
     let w = screen_width();
     let h = screen_height();
     let width = w as f64;
     let height = h as f64;
 
-    let initial_scale = 20.0f64;
-    let scale_f32 = initial_scale as f32;
-    let half_extent = vec2(
+    // Create shared parameters for UI window
+    let graph_params = Arc::new(Mutex::new(ui_window::GraphParams::default()));
+    let graph_params_clone = graph_params.clone();
+
+    // Spawn UI window in separate thread
+    thread::spawn(move || {
+        ui_window::run_ui_window(graph_params_clone);
+    });
+
+    let mut initial_scale = 20.0f64;
+    let mut half_extent = vec2(
         (width / initial_scale / 2.0) as f32,
         (height / initial_scale / 2.0) as f32,
     );
@@ -197,7 +214,6 @@ async fn main() {
     let mut hue_shift_2: f32 = 0.5;
     let mut dragging = false;
     let mut last_mouse = vec2(0.0, 0.0);
-    let mut color_static = false;
 
     // ── Render targets ──────────────────────────────────────────────────
     let scene_target = render_target(w as u32, h as u32);
@@ -289,18 +305,57 @@ async fn main() {
 
     let dummy = Texture2D::from_image(&Image::gen_image_color(1, 1, WHITE));
     let mut first_frame = true;
-    let mut taa_enabled = true;
-    let mut bloom_enabled = true;
 
-    let half_w = w / 2.0;
-    let half_h = h / 2.0;
+    let mut current_w = w;
+    let mut current_h = h;
+    let mut half_w = w / 2.0;
+    let mut half_h = h / 2.0;
     let axis_color = Color::new(1.0, 1.0, 1.0, 0.3);
     let origin_color = Color::new(1.0, 1.0, 1.0, 0.5);
 
     loop {
+        // Check for window resize
+        let new_w = screen_width();
+        let new_h = screen_height();
+        if (new_w - current_w).abs() > 0.1 || (new_h - current_h).abs() > 0.1 {
+            current_w = new_w;
+            current_h = new_h;
+            half_w = new_w / 2.0;
+            half_h = new_h / 2.0;
+        }
+        
         let dt = get_frame_time() as f64;
         time += dt;
         let mut camera_moved = false;
+
+        // Read from UI controls
+        let (taa_enabled, bloom_enabled, color_static) = if let Ok(params) = graph_params.lock() {
+            if (center_x - params.center_x).abs() > 1e-10 
+               || (center_y - params.center_y).abs() > 1e-10 
+               || (initial_scale - params.zoom).abs() > 1e-10 {
+                center_x = params.center_x;
+                center_y = params.center_y;
+                initial_scale = params.zoom;
+                half_extent = vec2(
+                    (current_w as f64 / initial_scale / 2.0) as f32,
+                    (current_h as f64 / initial_scale / 2.0) as f32,
+                );
+                scene_mat.set_uniform("half_extent", half_extent);
+                camera_moved = true;
+            }
+            (params.taa_enabled, params.bloom_enabled, params.color_static)
+        } else {
+            (true, true, false)
+        };
+
+        // Ensure zoom is always synced back to params
+        if let Ok(mut params) = graph_params.lock() {
+            if (params.zoom - initial_scale).abs() > 1e-10 {
+                params.zoom = initial_scale;
+            }
+        }
+
+        let scale_f32 = initial_scale as f32;
 
         hue_shift += 0.05 * dt as f32;
         if hue_shift >= 1.0 { hue_shift -= 1.0; }
@@ -309,18 +364,6 @@ async fn main() {
         if hue_shift_2 >= 1.0 { hue_shift_2 -= 1.0; }
 
         // ── Input ───────────────────────────────────────────────────────
-        if is_key_pressed(KeyCode::T) {
-            taa_enabled = !taa_enabled;
-            first_frame = true;
-        }
-
-        if is_key_pressed(KeyCode::C) {
-            color_static = !color_static;
-        }
-
-        if is_key_pressed(KeyCode::B) {
-            bloom_enabled = !bloom_enabled;
-        }
         if is_mouse_button_down(MouseButton::Left) {
             let (mx, my) = mouse_position();
             let current = vec2(mx, my);
@@ -329,6 +372,11 @@ async fn main() {
                 if md.length() > 0.0 {
                     center_x -= md.x as f64 / initial_scale;
                     center_y += md.y as f64 / initial_scale;
+                    // Update shared params
+                    if let Ok(mut params) = graph_params.lock() {
+                        params.center_x = center_x;
+                        params.center_y = center_y;
+                    }
                     camera_moved = true;
                 }
             }
@@ -350,9 +398,9 @@ async fn main() {
         scene_mat.set_uniform("hue_shift_2", hue_shift_2);
         scene_mat.set_uniform("hue_shift_2", hue_shift_2);
 
-        set_camera(&cam_for_target(Some(scene_target.clone()), w, h));
+        set_camera(&cam_for_target(Some(scene_target.clone()), current_w, current_h));
         gl_use_material(&scene_mat);
-        draw_fullscreen(&dummy, w, h);
+        draw_fullscreen(&dummy, current_w, current_h);
         gl_use_default_material();
 
         // ── Pass 2: Brightness extraction ───────────────────────────────
@@ -381,7 +429,7 @@ async fn main() {
 
         // ── Pass 4: Combine bloom + TAA (or bloom only) ─────────────────
         let bloom_intensity = if bloom_enabled { 0.5f32 } else { 0.0f32 };
-        set_camera(&cam_for_target(Some(taa_pong.clone()), w, h));
+        set_camera(&cam_for_target(Some(taa_pong.clone()), current_w, current_h));
         if taa_enabled {
             let taa_alpha = if first_frame || camera_moved { 1.0f32 } else { 0.1f32 };
             combine_taa_mat.set_uniform("taa_alpha", taa_alpha);
@@ -394,12 +442,12 @@ async fn main() {
             combine_bloom_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
             gl_use_material(&combine_bloom_mat);
         }
-        draw_fullscreen(&scene_target.texture, w, h);
+        draw_fullscreen(&scene_target.texture, current_w, current_h);
         gl_use_default_material();
 
         // ── Pass 5: Present ─────────────────────────────────────────────
         set_default_camera();
-        draw_fullscreen(&taa_pong.texture, w, h);
+        draw_fullscreen(&taa_pong.texture, current_w, current_h);
 
         std::mem::swap(&mut taa_ping, &mut taa_pong);
         first_frame = false;
@@ -408,33 +456,16 @@ async fn main() {
         let ox = half_w - center_x as f32 * scale_f32;
         let oy = half_h + center_y as f32 * scale_f32;
 
-        if oy >= 0.0 && oy <= h {
-            draw_line(0.0, oy, w, oy, 2.0, axis_color);
+        if oy >= 0.0 && oy <= current_h {
+            draw_line(0.0, oy, current_w, oy, 2.0, axis_color);
         }
-        if ox >= 0.0 && ox <= w {
-            draw_line(ox, 0.0, ox, h, 2.0, axis_color);
+        if ox >= 0.0 && ox <= current_w {
+            draw_line(ox, 0.0, ox, current_h, 2.0, axis_color);
         }
-        if ox >= 0.0 && ox <= w && oy >= 0.0 && oy <= h {
+        if ox >= 0.0 && ox <= current_w && oy >= 0.0 && oy <= current_h {
             draw_circle(ox, oy, 4.0, origin_color);
         }
 
-        let hud_lines = [
-            format!(
-                "TAA: {}  Bloom: {}  Colors: {}",
-                if taa_enabled { "ON" } else { "OFF" },
-                if bloom_enabled { "ON" } else { "OFF" },
-                if color_static { "STATIC" } else { "ANIM" },
-            ),
-            "Hotkeys:".to_string(),
-            "[T] Toggle TAA  [B] Toggle Bloom  [C] Toggle Colors".to_string(),
-        ];
-        let hud_x = 20.0;
-        let hud_y = 30.0;
-        let hud_size = 22.0;
-        let hud_line_spacing = 24.0;
-        for (i, line) in hud_lines.iter().enumerate() {
-            draw_text(line, hud_x, hud_y + i as f32 * hud_line_spacing, hud_size, WHITE);
-        }
         draw_fps();
         next_frame().await;
     }

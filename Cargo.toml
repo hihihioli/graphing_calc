@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 macroquad = "0.4.14"
 rayon = "1.8"
+eframe = "0.30"
+egui = "0.30"
+winit = "0.30"
 
 [package.metadata.bundle]
 name = "Graphing Calculator"
