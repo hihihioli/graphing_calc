@@ -320,7 +320,6 @@ async fn main() {
                 UniformDesc::new("static_hue_neg", UniformType::Float1),
                 UniformDesc::new("static_hue_pos", UniformType::Float1),
                 UniformDesc::new("hue_shift_2", UniformType::Float1),
-                UniformDesc::new("hue_shift_2", UniformType::Float1),
             ],
             ..Default::default()
         },
@@ -517,7 +516,6 @@ async fn main() {
         scene_mat.set_uniform("zoom_phase", zoom_phase);
         scene_mat.set_uniform("hue_shift", hue_shift);
         scene_mat.set_uniform("color_static", if color_static { 1.0f32 } else { 0.0f32 });
-        scene_mat.set_uniform("hue_shift_2", hue_shift_2);
         scene_mat.set_uniform("hue_shift_2", hue_shift_2);
 
         set_camera(&cam_for_target(Some(scene_target.clone()), current_w, current_h));
