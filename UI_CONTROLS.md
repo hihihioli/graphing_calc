@@ -15,7 +15,10 @@ When you run the application, a separate control window will open with the follo
 - **Reset View**: Button to reset all view values to default (0, 0, 20)
 
 #### Rendering Settings
-- **TAA (Temporal Anti-Aliasing)**: Toggle anti-aliasing for smoother visuals
+- **Anti-Aliasing**: Dropdown menu to select the anti-aliasing mode:
+  - **None**: No anti-aliasing (best performance)
+  - **FXAA**: Fast Approximate Anti-Aliasing (good quality, minimal performance impact)
+  - **TAA**: Temporal Anti-Aliasing (best quality, uses frame history for smoothest result)
 - **Bloom Effect**: Toggle the bloom/glow effect on bright areas
 - **Static Colors**: Toggle between animated color cycling and static colors
 

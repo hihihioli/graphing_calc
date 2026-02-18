@@ -27,7 +27,7 @@ void main() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SCENE_FRAG: &str = r#"#version 100
-precision highp float;
+precision mediump float;
 varying vec2 uv;
 
 uniform vec2 center;
@@ -141,6 +141,70 @@ void main() {
     vec3 scene = texture2D(Texture, uv).rgb;
     vec3 bloom = texture2D(_bloom_tex, uv).rgb;
     gl_FragColor = vec4(scene + bloom * bloom_intensity, 1.0);
+}
+"#;
+
+const FXAA_FRAG: &str = r#"#version 100
+precision highp float;
+varying vec2 uv;
+uniform sampler2D Texture;
+uniform sampler2D _bloom_tex;
+uniform vec2 resolution;
+uniform float bloom_intensity;
+
+#define FXAA_REDUCE_MIN   (1.0/128.0)
+#define FXAA_REDUCE_MUL   (1.0/8.0)
+#define FXAA_SPAN_MAX     8.0
+
+void main() {
+    vec2 inverseVP = 1.0 / resolution;
+    
+    vec3 rgbNW = texture2D(Texture, uv + vec2(-1.0, -1.0) * inverseVP).rgb;
+    vec3 rgbNE = texture2D(Texture, uv + vec2(1.0, -1.0) * inverseVP).rgb;
+    vec3 rgbSW = texture2D(Texture, uv + vec2(-1.0, 1.0) * inverseVP).rgb;
+    vec3 rgbSE = texture2D(Texture, uv + vec2(1.0, 1.0) * inverseVP).rgb;
+    vec3 rgbM  = texture2D(Texture, uv).rgb;
+    
+    const vec3 luma = vec3(0.299, 0.587, 0.114);
+    float lumaNW = dot(rgbNW, luma);
+    float lumaNE = dot(rgbNE, luma);
+    float lumaSW = dot(rgbSW, luma);
+    float lumaSE = dot(rgbSE, luma);
+    float lumaM  = dot(rgbM, luma);
+    
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+    
+    vec2 dir;
+    dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+    dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+    
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * FXAA_REDUCE_MUL), FXAA_REDUCE_MIN);
+    float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    
+    dir = min(vec2(FXAA_SPAN_MAX, FXAA_SPAN_MAX),
+          max(vec2(-FXAA_SPAN_MAX, -FXAA_SPAN_MAX),
+          dir * rcpDirMin)) * inverseVP;
+    
+    vec3 rgbA = 0.5 * (
+        texture2D(Texture, uv + dir * (1.0/3.0 - 0.5)).rgb +
+        texture2D(Texture, uv + dir * (2.0/3.0 - 0.5)).rgb);
+    
+    vec3 rgbB = rgbA * 0.5 + 0.25 * (
+        texture2D(Texture, uv + dir * -0.5).rgb +
+        texture2D(Texture, uv + dir * 0.5).rgb);
+    
+    float lumaB = dot(rgbB, luma);
+    
+    vec3 result;
+    if (lumaB < lumaMin || lumaB > lumaMax) {
+        result = rgbA;
+    } else {
+        result = rgbB;
+    }
+    
+    vec3 bloom = texture2D(_bloom_tex, uv).rgb;
+    gl_FragColor = vec4(result + bloom * bloom_intensity, 1.0);
 }
 "#;
 
@@ -291,10 +355,24 @@ async fn main() {
         },
     ).unwrap();
 
+    let fxaa_mat = load_material(
+        ShaderSource::Glsl { vertex: VERTEX, fragment: FXAA_FRAG },
+        MaterialParams {
+            uniforms: vec![
+                UniformDesc::new("bloom_intensity", UniformType::Float1),
+                UniformDesc::new("resolution", UniformType::Float2),
+            ],
+            textures: vec!["_bloom_tex".to_string()],
+            ..Default::default()
+        },
+    ).unwrap();
+
     // ── Tuning ──────────────────────────────────────────────────────────
     bright_mat.set_uniform("threshold", 0.1f32);
     combine_taa_mat.set_uniform("bloom_intensity", 0.5f32);
     combine_bloom_mat.set_uniform("bloom_intensity", 0.5f32);
+    fxaa_mat.set_uniform("bloom_intensity", 0.5f32);
+    fxaa_mat.set_uniform("resolution", vec2(w, h));
     scene_mat.set_uniform("static_hue_neg", 0.0f32);
     scene_mat.set_uniform("static_hue_pos", 2.0f32 / 3.0f32);
     scene_mat.set_uniform("half_extent", half_extent);
@@ -347,6 +425,9 @@ async fn main() {
             bw = blur_w as f32;
             bh = blur_h as f32;
             
+            // Update FXAA resolution
+            fxaa_mat.set_uniform("resolution", vec2(current_w, current_h));
+            
             first_frame = true;
         }
         
@@ -355,7 +436,7 @@ async fn main() {
         let mut camera_moved = false;
 
         // Read from UI controls
-        let (taa_enabled, bloom_enabled, color_static) = if let Ok(params) = graph_params.lock() {
+        let (aa_mode, bloom_enabled, color_static) = if let Ok(params) = graph_params.lock() {
             if (center_x - params.center_x).abs() > 1e-10 
                || (center_y - params.center_y).abs() > 1e-10 
                || (initial_scale - params.zoom).abs() > 1e-10 {
@@ -369,9 +450,9 @@ async fn main() {
                 scene_mat.set_uniform("half_extent", half_extent);
                 camera_moved = true;
             }
-            (params.taa_enabled, params.bloom_enabled, params.color_static)
+            (params.aa_mode, params.bloom_enabled, params.color_static)
         } else {
-            (true, true, false)
+            (ui_window::AAMode::TAA, true, false)
         };
 
         // Ensure zoom is always synced back to params
@@ -453,21 +534,32 @@ async fn main() {
             src = &blur_pong.texture;
         }
 
-        // ── Pass 4: Combine bloom + TAA (or bloom only) ─────────────────
+        // ── Pass 4: Combine bloom + AA ──────────────────────────────────
         let bloom_intensity = if bloom_enabled { 0.5f32 } else { 0.0f32 };
         set_camera(&cam_for_target(Some(taa_pong.clone()), current_w, current_h));
-        if taa_enabled {
-            let taa_alpha = if first_frame || camera_moved { 1.0f32 } else { 0.1f32 };
-            combine_taa_mat.set_uniform("taa_alpha", taa_alpha);
-            combine_taa_mat.set_uniform("bloom_intensity", bloom_intensity);
-            combine_taa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
-            combine_taa_mat.set_texture("_history_tex", taa_ping.texture.clone());
-            gl_use_material(&combine_taa_mat);
-        } else {
-            combine_bloom_mat.set_uniform("bloom_intensity", bloom_intensity);
-            combine_bloom_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
-            gl_use_material(&combine_bloom_mat);
+        
+        match aa_mode {
+            ui_window::AAMode::TAA => {
+                let taa_alpha = if first_frame || camera_moved { 1.0f32 } else { 0.1f32 };
+                combine_taa_mat.set_uniform("taa_alpha", taa_alpha);
+                combine_taa_mat.set_uniform("bloom_intensity", bloom_intensity);
+                combine_taa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+                combine_taa_mat.set_texture("_history_tex", taa_ping.texture.clone());
+                gl_use_material(&combine_taa_mat);
+            }
+            ui_window::AAMode::FXAA => {
+                fxaa_mat.set_uniform("bloom_intensity", bloom_intensity);
+                fxaa_mat.set_uniform("resolution", vec2(current_w, current_h));
+                fxaa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+                gl_use_material(&fxaa_mat);
+            }
+            ui_window::AAMode::None => {
+                combine_bloom_mat.set_uniform("bloom_intensity", bloom_intensity);
+                combine_bloom_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+                gl_use_material(&combine_bloom_mat);
+            }
         }
+        
         draw_fullscreen(&scene_target.texture, current_w, current_h);
         gl_use_default_material();
 

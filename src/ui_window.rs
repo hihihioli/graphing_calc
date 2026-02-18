@@ -1,12 +1,29 @@
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AAMode {
+    None,
+    FXAA,
+    TAA,
+}
+
+impl AAMode {
+    pub fn as_str(&self) -> &str {
+        match self {
+            AAMode::None => "None",
+            AAMode::FXAA => "FXAA",
+            AAMode::TAA => "TAA",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GraphParams {
     pub center_x: f64,
     pub center_y: f64,
     pub zoom: f64,
-    pub taa_enabled: bool,
+    pub aa_mode: AAMode,
     pub bloom_enabled: bool,
     pub color_static: bool,
 }
@@ -17,7 +34,7 @@ impl Default for GraphParams {
             center_x: 0.0,
             center_y: 0.0,
             zoom: 20.0,
-            taa_enabled: true,
+            aa_mode: AAMode::TAA,
             bloom_enabled: true,
             color_static: false,
         }
@@ -137,7 +154,18 @@ impl eframe::App for ControlApp {
                 ui.add_space(5.0);
 
                 if let Ok(mut p) = self.params.lock() {
-                    ui.checkbox(&mut p.taa_enabled, "TAA (Temporal Anti-Aliasing)");
+                    // AA Mode dropdown
+                    ui.horizontal(|ui| {
+                        ui.label("Anti-Aliasing:");
+                        egui::ComboBox::new("aa_mode", "")
+                            .selected_text(p.aa_mode.as_str())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut p.aa_mode, AAMode::None, "None");
+                                ui.selectable_value(&mut p.aa_mode, AAMode::FXAA, "FXAA");
+                                ui.selectable_value(&mut p.aa_mode, AAMode::TAA, "TAA");
+                            });
+                    });
+                    
                     ui.checkbox(&mut p.bloom_enabled, "Bloom Effect");
                     ui.checkbox(&mut p.color_static, "Static Colors");
                 }
