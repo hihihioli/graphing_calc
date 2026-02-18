@@ -264,12 +264,15 @@ async fn main() {
 
     // Create shared parameters for UI window
     let graph_params = Arc::new(Mutex::new(ui_window::GraphParams::default()));
-    let graph_params_clone = graph_params.clone();
-
-    // Spawn UI window in separate thread
-    thread::spawn(move || {
-        ui_window::run_ui_window(graph_params_clone);
-    });
+    
+    // Spawn UI window in separate thread (not supported on macOS)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let graph_params_clone = graph_params.clone();
+        thread::spawn(move || {
+            ui_window::run_ui_window(graph_params_clone);
+        });
+    }
 
     let mut initial_scale = 20.0f64;
     let mut half_extent = vec2(
