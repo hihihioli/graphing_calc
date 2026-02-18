@@ -252,10 +252,15 @@ async fn main() {
     next_frame().await;
     next_frame().await;
     
+    let dpi_scale = screen_dpi_scale();
     let w = screen_width();
     let h = screen_height();
     let width = w as f64;
     let height = h as f64;
+    
+    // Actual pixel dimensions for render targets (accounting for high DPI)
+    let pixel_w = (w * dpi_scale) as u32;
+    let pixel_h = (h * dpi_scale) as u32;
 
     // Create shared parameters for UI window
     let graph_params = Arc::new(Mutex::new(ui_window::GraphParams::default()));
@@ -281,16 +286,16 @@ async fn main() {
     let mut last_mouse = vec2(0.0, 0.0);
 
     // ── Render targets ──────────────────────────────────────────────────
-    let mut scene_target = render_target(w as u32, h as u32);
+    let mut scene_target = render_target(pixel_w, pixel_h);
     scene_target.texture.set_filter(FilterMode::Linear);
 
-    let mut taa_ping = render_target(w as u32, h as u32);
-    let mut taa_pong = render_target(w as u32, h as u32);
+    let mut taa_ping = render_target(pixel_w, pixel_h);
+    let mut taa_pong = render_target(pixel_w, pixel_h);
     taa_ping.texture.set_filter(FilterMode::Linear);
     taa_pong.texture.set_filter(FilterMode::Linear);
 
-    let mut blur_w = (w as u32) / 4;
-    let mut blur_h = (h as u32) / 4;
+    let mut blur_w = pixel_w / 4;
+    let mut blur_h = pixel_h / 4;
     let mut bright_target = render_target(blur_w, blur_h);
     let mut blur_ping = render_target(blur_w, blur_h);
     let mut blur_pong = render_target(blur_w, blur_h);
@@ -372,7 +377,7 @@ async fn main() {
     combine_taa_mat.set_uniform("bloom_intensity", 0.5f32);
     combine_bloom_mat.set_uniform("bloom_intensity", 0.5f32);
     fxaa_mat.set_uniform("bloom_intensity", 0.5f32);
-    fxaa_mat.set_uniform("resolution", vec2(w, h));
+    fxaa_mat.set_uniform("resolution", vec2(pixel_w as f32, pixel_h as f32));
     scene_mat.set_uniform("static_hue_neg", 0.0f32);
     scene_mat.set_uniform("static_hue_pos", 2.0f32 / 3.0f32);
     scene_mat.set_uniform("half_extent", half_extent);
@@ -387,6 +392,8 @@ async fn main() {
 
     let mut current_w = w;
     let mut current_h = h;
+    let mut current_pixel_w = pixel_w;
+    let mut current_pixel_h = pixel_h;
     let mut half_w = w / 2.0;
     let mut half_h = h / 2.0;
     let axis_color = Color::new(1.0, 1.0, 1.0, 0.3);
@@ -402,17 +409,22 @@ async fn main() {
             half_w = new_w / 2.0;
             half_h = new_h / 2.0;
             
-            // Recreate render targets at new size
-            scene_target = render_target(current_w as u32, current_h as u32);
+            // Recalculate pixel dimensions for high DPI
+            let dpi_scale = screen_dpi_scale();
+            current_pixel_w = (current_w * dpi_scale) as u32;
+            current_pixel_h = (current_h * dpi_scale) as u32;
+            
+            // Recreate render targets at new pixel size
+            scene_target = render_target(current_pixel_w, current_pixel_h);
             scene_target.texture.set_filter(FilterMode::Linear);
             
-            taa_ping = render_target(current_w as u32, current_h as u32);
-            taa_pong = render_target(current_w as u32, current_h as u32);
+            taa_ping = render_target(current_pixel_w, current_pixel_h);
+            taa_pong = render_target(current_pixel_w, current_pixel_h);
             taa_ping.texture.set_filter(FilterMode::Linear);
             taa_pong.texture.set_filter(FilterMode::Linear);
             
-            blur_w = (current_w as u32) / 4;
-            blur_h = (current_h as u32) / 4;
+            blur_w = current_pixel_w / 4;
+            blur_h = current_pixel_h / 4;
             bright_target = render_target(blur_w, blur_h);
             blur_ping = render_target(blur_w, blur_h);
             blur_pong = render_target(blur_w, blur_h);
@@ -425,8 +437,8 @@ async fn main() {
             bw = blur_w as f32;
             bh = blur_h as f32;
             
-            // Update FXAA resolution
-            fxaa_mat.set_uniform("resolution", vec2(current_w, current_h));
+            // Update FXAA resolution with pixel dimensions
+            fxaa_mat.set_uniform("resolution", vec2(current_pixel_w as f32, current_pixel_h as f32));
             
             first_frame = true;
         }
@@ -478,7 +490,7 @@ async fn main() {
                 let md = current - last_mouse;
                 if md.length() > 0.0 {
                     center_x -= md.x as f64 / initial_scale;
-                    center_y += md.y as f64 / initial_scale;
+                    center_y -= md.y as f64 / initial_scale;
                     // Update shared params
                     if let Ok(mut params) = graph_params.lock() {
                         params.center_x = center_x;
@@ -549,7 +561,7 @@ async fn main() {
             }
             ui_window::AAMode::FXAA => {
                 fxaa_mat.set_uniform("bloom_intensity", bloom_intensity);
-                fxaa_mat.set_uniform("resolution", vec2(current_w, current_h));
+                fxaa_mat.set_uniform("resolution", vec2(current_pixel_w as f32, current_pixel_h as f32));
                 fxaa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
                 gl_use_material(&fxaa_mat);
             }

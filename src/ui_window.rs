@@ -196,11 +196,16 @@ pub fn run_ui_window(params: Arc<Mutex<GraphParams>>) {
             .with_title("Graphing Calculator Controls")
             .with_inner_size([400.0, 450.0])
             .with_resizable(true),
-        event_loop_builder: Some(Box::new(|builder| {
+        event_loop_builder: Some(Box::new(|_builder| {
             #[cfg(target_os = "windows")]
             {
                 use winit::platform::windows::EventLoopBuilderExtWindows;
-                builder.with_any_thread(true);
+                _builder.with_any_thread(true);
+            }
+            #[cfg(target_os = "linux")]
+            {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                _builder.with_any_thread(true);
             }
         })),
         ..Default::default()
