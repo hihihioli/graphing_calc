@@ -491,6 +491,7 @@ async fn main() {
             if dragging {
                 let md = current - last_mouse;
                 if md.length() > 0.0 {
+                    // Subtract to invert screen coordinates (drag down = move view down)
                     center_x -= md.x as f64 / initial_scale;
                     center_y -= md.y as f64 / initial_scale;
                     // Update shared params
