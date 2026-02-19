@@ -26,8 +26,10 @@ void main() {
 // SCENE SHADER
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCENE_FRAG: &str = r#"#version 100
-precision highp float;
+fn build_scene_frag(expr: &str) -> String {
+    format!(
+        r#"#version 100
+precision mediump float;
 varying vec2 uv;
 
 uniform vec2 center;
@@ -40,7 +42,7 @@ uniform float static_hue_neg;
 uniform float static_hue_pos;
 uniform float hue_shift_2;
 
-vec3 hsl2rgb(float h, float s, float l) {
+vec3 hsl2rgb(float h, float s, float l) {{
     float c = (1.0 - abs(2.0 * l - 1.0)) * s;
     float m = l - c * 0.5;
     float h6 = h * 6.0;
@@ -53,30 +55,67 @@ vec3 hsl2rgb(float h, float s, float l) {
     else if (h6 < 5.0) rgb = vec3(x, 0.0, c);
     else                rgb = vec3(c, 0.0, x);
     return rgb + m;
-}
+}}
 
-void main() {
+void main() {{
     float x_coord = center.x + (uv.x - 0.5) * half_extent.x * 2.0;
     float y_coord = center.y + (0.5 - uv.y) * half_extent.y * 2.0;
+
+    float x = x_coord;
+    float y = y_coord;
 
     float log_y = log(max(abs(y_coord), 1e-20)) * 10.0;
     float log_x = log(max(abs(x_coord), 1e-20)) * 10.0;
 
-    float val = (sin(log_y - zoom_phase - a_phase)
-               - cos(log_x - zoom_phase + a_phase)) * 0.5;
+    float val = {expr};
 
     float intensity = exp2(-abs(val));
 
     float hue = val < 0.0
         ? mod(hue_shift, 1.0)
         : mod(hue_shift_2, 1.0);
-    if (color_static > 0.5) {
+    if (color_static > 0.5) {{
         hue = val < 0.0 ? static_hue_neg : static_hue_pos;
-    }
+    }}
 
     gl_FragColor = vec4(hsl2rgb(hue, 1.0, intensity * 0.5), 1.0);
+}}
+"#,
+        expr = expr
+    )
 }
-"#;
+
+fn load_scene_material(expr: &str) -> Result<Material, String> {
+    let fragment_source = build_scene_frag(expr);
+    let fragment_static: &'static str = Box::leak(fragment_source.into_boxed_str());
+    load_material(
+        ShaderSource::Glsl {
+            vertex: VERTEX,
+            fragment: fragment_static,
+        },
+        MaterialParams {
+            uniforms: vec![
+                UniformDesc::new("center", UniformType::Float2),
+                UniformDesc::new("half_extent", UniformType::Float2),
+                UniformDesc::new("a_phase", UniformType::Float1),
+                UniformDesc::new("zoom_phase", UniformType::Float1),
+                UniformDesc::new("hue_shift", UniformType::Float1),
+                UniformDesc::new("color_static", UniformType::Float1),
+                UniformDesc::new("static_hue_neg", UniformType::Float1),
+                UniformDesc::new("static_hue_pos", UniformType::Float1),
+                UniformDesc::new("hue_shift_2", UniformType::Float1),
+            ],
+            ..Default::default()
+        },
+    )
+    .map_err(|err| format!("Shader error: {err:?}"))
+}
+
+fn init_scene_uniforms(scene_mat: &Material, half_extent: Vec2) {
+    scene_mat.set_uniform("static_hue_neg", 0.0f32);
+    scene_mat.set_uniform("static_hue_pos", 2.0f32 / 3.0f32);
+    scene_mat.set_uniform("half_extent", half_extent);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST-PROCESSING SHADERS
@@ -144,6 +183,70 @@ void main() {
 }
 "#;
 
+const FXAA_FRAG: &str = r#"#version 100
+precision highp float;
+varying vec2 uv;
+uniform sampler2D Texture;
+uniform sampler2D _bloom_tex;
+uniform vec2 resolution;
+uniform float bloom_intensity;
+
+#define FXAA_REDUCE_MIN   (1.0/128.0)
+#define FXAA_REDUCE_MUL   (1.0/8.0)
+#define FXAA_SPAN_MAX     8.0
+
+void main() {
+    vec2 inverseVP = 1.0 / resolution;
+    
+    vec3 rgbNW = texture2D(Texture, uv + vec2(-1.0, -1.0) * inverseVP).rgb;
+    vec3 rgbNE = texture2D(Texture, uv + vec2(1.0, -1.0) * inverseVP).rgb;
+    vec3 rgbSW = texture2D(Texture, uv + vec2(-1.0, 1.0) * inverseVP).rgb;
+    vec3 rgbSE = texture2D(Texture, uv + vec2(1.0, 1.0) * inverseVP).rgb;
+    vec3 rgbM  = texture2D(Texture, uv).rgb;
+    
+    const vec3 luma = vec3(0.299, 0.587, 0.114);
+    float lumaNW = dot(rgbNW, luma);
+    float lumaNE = dot(rgbNE, luma);
+    float lumaSW = dot(rgbSW, luma);
+    float lumaSE = dot(rgbSE, luma);
+    float lumaM  = dot(rgbM, luma);
+    
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+    
+    vec2 dir;
+    dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+    dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+    
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * FXAA_REDUCE_MUL), FXAA_REDUCE_MIN);
+    float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+    
+    dir = min(vec2(FXAA_SPAN_MAX, FXAA_SPAN_MAX),
+          max(vec2(-FXAA_SPAN_MAX, -FXAA_SPAN_MAX),
+          dir * rcpDirMin)) * inverseVP;
+    
+    vec3 rgbA = 0.5 * (
+        texture2D(Texture, uv + dir * (1.0/3.0 - 0.5)).rgb +
+        texture2D(Texture, uv + dir * (2.0/3.0 - 0.5)).rgb);
+    
+    vec3 rgbB = rgbA * 0.5 + 0.25 * (
+        texture2D(Texture, uv + dir * -0.5).rgb +
+        texture2D(Texture, uv + dir * 0.5).rgb);
+    
+    float lumaB = dot(rgbB, luma);
+    
+    vec3 result;
+    if (lumaB < lumaMin || lumaB > lumaMax) {
+        result = rgbA;
+    } else {
+        result = rgbB;
+    }
+    
+    vec3 bloom = texture2D(_bloom_tex, uv).rgb;
+    gl_FragColor = vec4(result + bloom * bloom_intensity, 1.0);
+}
+"#;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -188,19 +291,27 @@ async fn main() {
     next_frame().await;
     next_frame().await;
     
+    let dpi_scale = screen_dpi_scale();
     let w = screen_width();
     let h = screen_height();
     let width = w as f64;
     let height = h as f64;
+    
+    // Actual pixel dimensions for render targets (accounting for high DPI)
+    let pixel_w = (w * dpi_scale) as u32;
+    let pixel_h = (h * dpi_scale) as u32;
 
     // Create shared parameters for UI window
     let graph_params = Arc::new(Mutex::new(ui_window::GraphParams::default()));
-    let graph_params_clone = graph_params.clone();
-
-    // Spawn UI window in separate thread
-    thread::spawn(move || {
-        ui_window::run_ui_window(graph_params_clone);
-    });
+    
+    // Spawn UI window in separate thread (not supported on macOS)
+    #[cfg(not(target_os = "macos"))]
+    {
+        let graph_params_clone = graph_params.clone();
+        thread::spawn(move || {
+            ui_window::run_ui_window(graph_params_clone);
+        });
+    }
 
     let mut initial_scale = 20.0f64;
     let mut half_extent = vec2(
@@ -217,16 +328,16 @@ async fn main() {
     let mut last_mouse = vec2(0.0, 0.0);
 
     // ── Render targets ──────────────────────────────────────────────────
-    let mut scene_target = render_target(w as u32, h as u32);
+    let mut scene_target = render_target(pixel_w, pixel_h);
     scene_target.texture.set_filter(FilterMode::Linear);
 
-    let mut taa_ping = render_target(w as u32, h as u32);
-    let mut taa_pong = render_target(w as u32, h as u32);
+    let mut taa_ping = render_target(pixel_w, pixel_h);
+    let mut taa_pong = render_target(pixel_w, pixel_h);
     taa_ping.texture.set_filter(FilterMode::Linear);
     taa_pong.texture.set_filter(FilterMode::Linear);
 
-    let mut blur_w = (w as u32) / 4;
-    let mut blur_h = (h as u32) / 4;
+    let mut blur_w = pixel_w / 4;
+    let mut blur_h = pixel_h / 4;
     let mut bright_target = render_target(blur_w, blur_h);
     let mut blur_ping = render_target(blur_w, blur_h);
     let mut blur_pong = render_target(blur_w, blur_h);
@@ -235,24 +346,8 @@ async fn main() {
     blur_pong.texture.set_filter(FilterMode::Linear);
 
     // ── Materials ───────────────────────────────────────────────────────
-    let scene_mat = load_material(
-        ShaderSource::Glsl { vertex: VERTEX, fragment: SCENE_FRAG },
-        MaterialParams {
-            uniforms: vec![
-                UniformDesc::new("center",      UniformType::Float2),
-                UniformDesc::new("half_extent", UniformType::Float2),
-                UniformDesc::new("a_phase",     UniformType::Float1),
-                UniformDesc::new("zoom_phase",  UniformType::Float1),
-                UniformDesc::new("hue_shift",   UniformType::Float1),
-                UniformDesc::new("color_static", UniformType::Float1),
-                UniformDesc::new("static_hue_neg", UniformType::Float1),
-                UniformDesc::new("static_hue_pos", UniformType::Float1),
-                UniformDesc::new("hue_shift_2", UniformType::Float1),
-                UniformDesc::new("hue_shift_2", UniformType::Float1),
-            ],
-            ..Default::default()
-        },
-    ).unwrap();
+    let mut current_function_expr = ui_window::DEFAULT_FUNCTION_EXPR.to_string();
+    let mut scene_mat = load_scene_material(&current_function_expr).unwrap();
 
     let bright_mat = load_material(
         ShaderSource::Glsl { vertex: VERTEX, fragment: BRIGHT_FRAG },
@@ -291,13 +386,25 @@ async fn main() {
         },
     ).unwrap();
 
+    let fxaa_mat = load_material(
+        ShaderSource::Glsl { vertex: VERTEX, fragment: FXAA_FRAG },
+        MaterialParams {
+            uniforms: vec![
+                UniformDesc::new("bloom_intensity", UniformType::Float1),
+                UniformDesc::new("resolution", UniformType::Float2),
+            ],
+            textures: vec!["_bloom_tex".to_string()],
+            ..Default::default()
+        },
+    ).unwrap();
+
     // ── Tuning ──────────────────────────────────────────────────────────
     bright_mat.set_uniform("threshold", 0.1f32);
     combine_taa_mat.set_uniform("bloom_intensity", 0.5f32);
     combine_bloom_mat.set_uniform("bloom_intensity", 0.5f32);
-    scene_mat.set_uniform("static_hue_neg", 0.0f32);
-    scene_mat.set_uniform("static_hue_pos", 2.0f32 / 3.0f32);
-    scene_mat.set_uniform("half_extent", half_extent);
+    fxaa_mat.set_uniform("bloom_intensity", 0.5f32);
+    fxaa_mat.set_uniform("resolution", vec2(pixel_w as f32, pixel_h as f32));
+    init_scene_uniforms(&scene_mat, half_extent);
 
     let mut dir_h = vec2(1.0 / blur_w as f32, 0.0);
     let mut dir_v = vec2(0.0, 1.0 / blur_h as f32);
@@ -309,6 +416,8 @@ async fn main() {
 
     let mut current_w = w;
     let mut current_h = h;
+    let mut current_pixel_w = pixel_w;
+    let mut current_pixel_h = pixel_h;
     let mut half_w = w / 2.0;
     let mut half_h = h / 2.0;
     let axis_color = Color::new(1.0, 1.0, 1.0, 0.3);
@@ -324,17 +433,22 @@ async fn main() {
             half_w = new_w / 2.0;
             half_h = new_h / 2.0;
             
-            // Recreate render targets at new size
-            scene_target = render_target(current_w as u32, current_h as u32);
+            // Recalculate pixel dimensions for high DPI
+            let dpi_scale = screen_dpi_scale();
+            current_pixel_w = (current_w * dpi_scale) as u32;
+            current_pixel_h = (current_h * dpi_scale) as u32;
+            
+            // Recreate render targets at new pixel size
+            scene_target = render_target(current_pixel_w, current_pixel_h);
             scene_target.texture.set_filter(FilterMode::Linear);
             
-            taa_ping = render_target(current_w as u32, current_h as u32);
-            taa_pong = render_target(current_w as u32, current_h as u32);
+            taa_ping = render_target(current_pixel_w, current_pixel_h);
+            taa_pong = render_target(current_pixel_w, current_pixel_h);
             taa_ping.texture.set_filter(FilterMode::Linear);
             taa_pong.texture.set_filter(FilterMode::Linear);
             
-            blur_w = (current_w as u32) / 4;
-            blur_h = (current_h as u32) / 4;
+            blur_w = current_pixel_w / 4;
+            blur_h = current_pixel_h / 4;
             bright_target = render_target(blur_w, blur_h);
             blur_ping = render_target(blur_w, blur_h);
             blur_pong = render_target(blur_w, blur_h);
@@ -347,6 +461,9 @@ async fn main() {
             bw = blur_w as f32;
             bh = blur_h as f32;
             
+            // Update FXAA resolution with pixel dimensions
+            fxaa_mat.set_uniform("resolution", vec2(current_pixel_w as f32, current_pixel_h as f32));
+            
             first_frame = true;
         }
         
@@ -355,7 +472,8 @@ async fn main() {
         let mut camera_moved = false;
 
         // Read from UI controls
-        let (taa_enabled, bloom_enabled, color_static) = if let Ok(params) = graph_params.lock() {
+        let (aa_mode, bloom_enabled, color_static, function_expr, function_dirty) =
+            if let Ok(mut params) = graph_params.lock() {
             if (center_x - params.center_x).abs() > 1e-10 
                || (center_y - params.center_y).abs() > 1e-10 
                || (initial_scale - params.zoom).abs() > 1e-10 {
@@ -369,10 +487,40 @@ async fn main() {
                 scene_mat.set_uniform("half_extent", half_extent);
                 camera_moved = true;
             }
-            (params.taa_enabled, params.bloom_enabled, params.color_static)
+            let expr = params.function_expr.clone();
+            let dirty = params.function_dirty;
+            if params.function_dirty {
+                params.function_dirty = false;
+            }
+            (params.aa_mode, params.bloom_enabled, params.color_static, expr, dirty)
         } else {
-            (true, true, false)
+            (
+                ui_window::AAMode::TAA,
+                true,
+                false,
+                current_function_expr.clone(),
+                false,
+            )
         };
+
+        if function_dirty && function_expr != current_function_expr {
+            match load_scene_material(&function_expr) {
+                Ok(new_mat) => {
+                    scene_mat = new_mat;
+                    init_scene_uniforms(&scene_mat, half_extent);
+                    current_function_expr = function_expr;
+                    if let Ok(mut params) = graph_params.lock() {
+                        params.shader_error = None;
+                    }
+                    camera_moved = true;
+                }
+                Err(err) => {
+                    if let Ok(mut params) = graph_params.lock() {
+                        params.shader_error = Some(err);
+                    }
+                }
+            }
+        }
 
         // Ensure zoom is always synced back to params
         if let Ok(mut params) = graph_params.lock() {
@@ -396,8 +544,9 @@ async fn main() {
             if dragging {
                 let md = current - last_mouse;
                 if md.length() > 0.0 {
+                    // Subtract to invert screen coordinates (drag down = move view down)
                     center_x -= md.x as f64 / initial_scale;
-                    center_y += md.y as f64 / initial_scale;
+                    center_y -= md.y as f64 / initial_scale;
                     // Update shared params
                     if let Ok(mut params) = graph_params.lock() {
                         params.center_x = center_x;
@@ -421,7 +570,6 @@ async fn main() {
         scene_mat.set_uniform("zoom_phase", zoom_phase);
         scene_mat.set_uniform("hue_shift", hue_shift);
         scene_mat.set_uniform("color_static", if color_static { 1.0f32 } else { 0.0f32 });
-        scene_mat.set_uniform("hue_shift_2", hue_shift_2);
         scene_mat.set_uniform("hue_shift_2", hue_shift_2);
 
         set_camera(&cam_for_target(Some(scene_target.clone()), current_w, current_h));
@@ -453,21 +601,32 @@ async fn main() {
             src = &blur_pong.texture;
         }
 
-        // ── Pass 4: Combine bloom + TAA (or bloom only) ─────────────────
+        // ── Pass 4: Combine bloom + AA ──────────────────────────────────
         let bloom_intensity = if bloom_enabled { 0.5f32 } else { 0.0f32 };
         set_camera(&cam_for_target(Some(taa_pong.clone()), current_w, current_h));
-        if taa_enabled {
-            let taa_alpha = if first_frame || camera_moved { 1.0f32 } else { 0.1f32 };
-            combine_taa_mat.set_uniform("taa_alpha", taa_alpha);
-            combine_taa_mat.set_uniform("bloom_intensity", bloom_intensity);
-            combine_taa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
-            combine_taa_mat.set_texture("_history_tex", taa_ping.texture.clone());
-            gl_use_material(&combine_taa_mat);
-        } else {
-            combine_bloom_mat.set_uniform("bloom_intensity", bloom_intensity);
-            combine_bloom_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
-            gl_use_material(&combine_bloom_mat);
+        
+        match aa_mode {
+            ui_window::AAMode::TAA => {
+                let taa_alpha = if first_frame || camera_moved { 1.0f32 } else { 0.1f32 };
+                combine_taa_mat.set_uniform("taa_alpha", taa_alpha);
+                combine_taa_mat.set_uniform("bloom_intensity", bloom_intensity);
+                combine_taa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+                combine_taa_mat.set_texture("_history_tex", taa_ping.texture.clone());
+                gl_use_material(&combine_taa_mat);
+            }
+            ui_window::AAMode::FXAA => {
+                fxaa_mat.set_uniform("bloom_intensity", bloom_intensity);
+                fxaa_mat.set_uniform("resolution", vec2(current_pixel_w as f32, current_pixel_h as f32));
+                fxaa_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+                gl_use_material(&fxaa_mat);
+            }
+            ui_window::AAMode::None => {
+                combine_bloom_mat.set_uniform("bloom_intensity", bloom_intensity);
+                combine_bloom_mat.set_texture("_bloom_tex", blur_pong.texture.clone());
+                gl_use_material(&combine_bloom_mat);
+            }
         }
+        
         draw_fullscreen(&scene_target.texture, current_w, current_h);
         gl_use_default_material();
 
