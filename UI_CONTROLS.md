@@ -24,6 +24,12 @@ When you run the application, a separate control window will open with the follo
 - **Bloom Effect**: Toggle the bloom/glow effect on bright areas
 - **Static Colors**: Toggle between animated color cycling and static colors
 
+#### Function Expression
+- **Function Expression**: Single-line text input for the fragment formula (GLSL syntax)
+- **Apply**: Recompile the shader with the new expression
+- **Reset**: Restore the default expression
+- **Available variables**: `x`, `y`, `log_x`, `log_y`, `a_phase`, `zoom_phase`
+
 #### Current Values Display
 - Shows the real-time current X, Y, and Zoom values
 

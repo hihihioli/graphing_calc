@@ -1,6 +1,9 @@
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
+pub const DEFAULT_FUNCTION_EXPR: &str =
+    "(sin(log_y - zoom_phase - a_phase) - cos(log_x - zoom_phase + a_phase)) * 0.5";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AAMode {
     None,
@@ -26,6 +29,9 @@ pub struct GraphParams {
     pub aa_mode: AAMode,
     pub bloom_enabled: bool,
     pub color_static: bool,
+    pub function_expr: String,
+    pub function_dirty: bool,
+    pub shader_error: Option<String>,
 }
 
 impl Default for GraphParams {
@@ -37,6 +43,9 @@ impl Default for GraphParams {
             aa_mode: AAMode::TAA,
             bloom_enabled: true,
             color_static: false,
+            function_expr: DEFAULT_FUNCTION_EXPR.to_string(),
+            function_dirty: false,
+            shader_error: None,
         }
     }
 }
@@ -46,6 +55,8 @@ struct ControlApp {
     center_x_str: String,
     center_y_str: String,
     zoom_str: String,
+    function_expr_str: String,
+    last_synced_expr: String,
     last_synced_x: f64,
     last_synced_y: f64,
     last_synced_zoom: f64,
@@ -58,6 +69,8 @@ impl ControlApp {
             center_x_str: String::from("0.0"),
             center_y_str: String::from("0.0"),
             zoom_str: String::from("20.0"),
+            function_expr_str: DEFAULT_FUNCTION_EXPR.to_string(),
+            last_synced_expr: DEFAULT_FUNCTION_EXPR.to_string(),
             last_synced_x: 0.0,
             last_synced_y: 0.0,
             last_synced_zoom: 20.0,
@@ -80,6 +93,10 @@ impl eframe::App for ControlApp {
             if (p.zoom - self.last_synced_zoom).abs() > 1e-6 {
                 self.zoom_str = format!("{:.4}", p.zoom);
                 self.last_synced_zoom = p.zoom;
+            }
+            if p.function_expr != self.last_synced_expr {
+                self.function_expr_str = p.function_expr.clone();
+                self.last_synced_expr = p.function_expr.clone();
             }
         }
 
@@ -173,6 +190,43 @@ impl eframe::App for ControlApp {
 
             ui.add_space(10.0);
 
+            // Function input
+            ui.group(|ui| {
+                ui.label("Function Expression");
+                ui.add_space(5.0);
+                ui.label("Use GLSL syntax. Available vars: x, y, log_x, log_y, a_phase, zoom_phase");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.function_expr_str)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        if let Ok(mut p) = self.params.lock() {
+                            p.function_expr = self.function_expr_str.clone();
+                            p.function_dirty = true;
+                            p.shader_error = None;
+                            self.last_synced_expr = p.function_expr.clone();
+                        }
+                    }
+                    if ui.button("Reset").clicked() {
+                        self.function_expr_str = DEFAULT_FUNCTION_EXPR.to_string();
+                        if let Ok(mut p) = self.params.lock() {
+                            p.function_expr = DEFAULT_FUNCTION_EXPR.to_string();
+                            p.function_dirty = true;
+                            p.shader_error = None;
+                            self.last_synced_expr = p.function_expr.clone();
+                        }
+                    }
+                });
+                if let Ok(p) = self.params.lock() {
+                    if let Some(err) = &p.shader_error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, err);
+                    }
+                }
+            });
+
+            ui.add_space(10.0);
+
             // Display current values
             if let Ok(p) = self.params.lock() {
                 ui.separator();
@@ -194,7 +248,7 @@ pub fn run_ui_window(params: Arc<Mutex<GraphParams>>) {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Graphing Calculator Controls")
-            .with_inner_size([400.0, 450.0])
+            .with_inner_size([500.0, 520.0])
             .with_resizable(true),
         event_loop_builder: Some(Box::new(|_builder| {
             #[cfg(target_os = "windows")]

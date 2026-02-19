@@ -26,7 +26,9 @@ void main() {
 // SCENE SHADER
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SCENE_FRAG: &str = r#"#version 100
+fn build_scene_frag(expr: &str) -> String {
+    format!(
+        r#"#version 100
 precision mediump float;
 varying vec2 uv;
 
@@ -40,7 +42,7 @@ uniform float static_hue_neg;
 uniform float static_hue_pos;
 uniform float hue_shift_2;
 
-vec3 hsl2rgb(float h, float s, float l) {
+vec3 hsl2rgb(float h, float s, float l) {{
     float c = (1.0 - abs(2.0 * l - 1.0)) * s;
     float m = l - c * 0.5;
     float h6 = h * 6.0;
@@ -53,30 +55,67 @@ vec3 hsl2rgb(float h, float s, float l) {
     else if (h6 < 5.0) rgb = vec3(x, 0.0, c);
     else                rgb = vec3(c, 0.0, x);
     return rgb + m;
-}
+}}
 
-void main() {
+void main() {{
     float x_coord = center.x + (uv.x - 0.5) * half_extent.x * 2.0;
     float y_coord = center.y + (0.5 - uv.y) * half_extent.y * 2.0;
+
+    float x = x_coord;
+    float y = y_coord;
 
     float log_y = log(max(abs(y_coord), 1e-20)) * 10.0;
     float log_x = log(max(abs(x_coord), 1e-20)) * 10.0;
 
-    float val = (sin(log_y - zoom_phase - a_phase)
-               - cos(log_x - zoom_phase + a_phase)) * 0.5;
+    float val = {expr};
 
     float intensity = exp2(-abs(val));
 
     float hue = val < 0.0
         ? mod(hue_shift, 1.0)
         : mod(hue_shift_2, 1.0);
-    if (color_static > 0.5) {
+    if (color_static > 0.5) {{
         hue = val < 0.0 ? static_hue_neg : static_hue_pos;
-    }
+    }}
 
     gl_FragColor = vec4(hsl2rgb(hue, 1.0, intensity * 0.5), 1.0);
+}}
+"#,
+        expr = expr
+    )
 }
-"#;
+
+fn load_scene_material(expr: &str) -> Result<Material, String> {
+    let fragment_source = build_scene_frag(expr);
+    let fragment_static: &'static str = Box::leak(fragment_source.into_boxed_str());
+    load_material(
+        ShaderSource::Glsl {
+            vertex: VERTEX,
+            fragment: fragment_static,
+        },
+        MaterialParams {
+            uniforms: vec![
+                UniformDesc::new("center", UniformType::Float2),
+                UniformDesc::new("half_extent", UniformType::Float2),
+                UniformDesc::new("a_phase", UniformType::Float1),
+                UniformDesc::new("zoom_phase", UniformType::Float1),
+                UniformDesc::new("hue_shift", UniformType::Float1),
+                UniformDesc::new("color_static", UniformType::Float1),
+                UniformDesc::new("static_hue_neg", UniformType::Float1),
+                UniformDesc::new("static_hue_pos", UniformType::Float1),
+                UniformDesc::new("hue_shift_2", UniformType::Float1),
+            ],
+            ..Default::default()
+        },
+    )
+    .map_err(|err| format!("Shader error: {err:?}"))
+}
+
+fn init_scene_uniforms(scene_mat: &Material, half_extent: Vec2) {
+    scene_mat.set_uniform("static_hue_neg", 0.0f32);
+    scene_mat.set_uniform("static_hue_pos", 2.0f32 / 3.0f32);
+    scene_mat.set_uniform("half_extent", half_extent);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST-PROCESSING SHADERS
@@ -307,23 +346,8 @@ async fn main() {
     blur_pong.texture.set_filter(FilterMode::Linear);
 
     // ── Materials ───────────────────────────────────────────────────────
-    let scene_mat = load_material(
-        ShaderSource::Glsl { vertex: VERTEX, fragment: SCENE_FRAG },
-        MaterialParams {
-            uniforms: vec![
-                UniformDesc::new("center",      UniformType::Float2),
-                UniformDesc::new("half_extent", UniformType::Float2),
-                UniformDesc::new("a_phase",     UniformType::Float1),
-                UniformDesc::new("zoom_phase",  UniformType::Float1),
-                UniformDesc::new("hue_shift",   UniformType::Float1),
-                UniformDesc::new("color_static", UniformType::Float1),
-                UniformDesc::new("static_hue_neg", UniformType::Float1),
-                UniformDesc::new("static_hue_pos", UniformType::Float1),
-                UniformDesc::new("hue_shift_2", UniformType::Float1),
-            ],
-            ..Default::default()
-        },
-    ).unwrap();
+    let mut current_function_expr = ui_window::DEFAULT_FUNCTION_EXPR.to_string();
+    let mut scene_mat = load_scene_material(&current_function_expr).unwrap();
 
     let bright_mat = load_material(
         ShaderSource::Glsl { vertex: VERTEX, fragment: BRIGHT_FRAG },
@@ -380,9 +404,7 @@ async fn main() {
     combine_bloom_mat.set_uniform("bloom_intensity", 0.5f32);
     fxaa_mat.set_uniform("bloom_intensity", 0.5f32);
     fxaa_mat.set_uniform("resolution", vec2(pixel_w as f32, pixel_h as f32));
-    scene_mat.set_uniform("static_hue_neg", 0.0f32);
-    scene_mat.set_uniform("static_hue_pos", 2.0f32 / 3.0f32);
-    scene_mat.set_uniform("half_extent", half_extent);
+    init_scene_uniforms(&scene_mat, half_extent);
 
     let mut dir_h = vec2(1.0 / blur_w as f32, 0.0);
     let mut dir_v = vec2(0.0, 1.0 / blur_h as f32);
@@ -450,7 +472,8 @@ async fn main() {
         let mut camera_moved = false;
 
         // Read from UI controls
-        let (aa_mode, bloom_enabled, color_static) = if let Ok(params) = graph_params.lock() {
+        let (aa_mode, bloom_enabled, color_static, function_expr, function_dirty) =
+            if let Ok(mut params) = graph_params.lock() {
             if (center_x - params.center_x).abs() > 1e-10 
                || (center_y - params.center_y).abs() > 1e-10 
                || (initial_scale - params.zoom).abs() > 1e-10 {
@@ -464,10 +487,40 @@ async fn main() {
                 scene_mat.set_uniform("half_extent", half_extent);
                 camera_moved = true;
             }
-            (params.aa_mode, params.bloom_enabled, params.color_static)
+            let expr = params.function_expr.clone();
+            let dirty = params.function_dirty;
+            if params.function_dirty {
+                params.function_dirty = false;
+            }
+            (params.aa_mode, params.bloom_enabled, params.color_static, expr, dirty)
         } else {
-            (ui_window::AAMode::TAA, true, false)
+            (
+                ui_window::AAMode::TAA,
+                true,
+                false,
+                current_function_expr.clone(),
+                false,
+            )
         };
+
+        if function_dirty && function_expr != current_function_expr {
+            match load_scene_material(&function_expr) {
+                Ok(new_mat) => {
+                    scene_mat = new_mat;
+                    init_scene_uniforms(&scene_mat, half_extent);
+                    current_function_expr = function_expr;
+                    if let Ok(mut params) = graph_params.lock() {
+                        params.shader_error = None;
+                    }
+                    camera_moved = true;
+                }
+                Err(err) => {
+                    if let Ok(mut params) = graph_params.lock() {
+                        params.shader_error = Some(err);
+                    }
+                }
+            }
+        }
 
         // Ensure zoom is always synced back to params
         if let Ok(mut params) = graph_params.lock() {
