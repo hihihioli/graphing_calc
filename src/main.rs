@@ -282,8 +282,17 @@ fn cam_for_target(target: Option<RenderTarget>, w: f32, h: f32) -> Camera2D {
 // MAIN
 // ─────────────────────────────────────────────────────────────────────────────
 
+const DEFAULT_ZOOM: f64 = 20.0;
 const A_PHASE_RATE: f64 = 5.0 * std::f64::consts::LN_2;
 const ZOOM_PHASE_RATE: f64 = 10.0 * std::f64::consts::LN_2;
+const MIN_RATE_SCALE: f64 = 0.1;
+const MAX_RATE_SCALE: f64 = 10.0;
+
+fn phase_rate_scale_for_zoom(zoom: f64) -> f64 {
+    let normalized = (zoom / DEFAULT_ZOOM).max(1e-6);
+    let scale = 1.0 / normalized;
+    scale.clamp(MIN_RATE_SCALE, MAX_RATE_SCALE)
+}
 
 #[macroquad::main(window_conf)]
 async fn main() {
@@ -313,7 +322,7 @@ async fn main() {
         });
     }
 
-    let mut initial_scale = 20.0f64;
+    let mut initial_scale = DEFAULT_ZOOM;
     let mut half_extent = vec2(
         (width / initial_scale / 2.0) as f32,
         (height / initial_scale / 2.0) as f32,
@@ -561,8 +570,10 @@ async fn main() {
             dragging = false;
         }
 
-        let a_phase    = (time * A_PHASE_RATE    % std::f64::consts::TAU) as f32;
-        let zoom_phase = (time * ZOOM_PHASE_RATE % std::f64::consts::TAU) as f32;
+        let phase_rate_scale = phase_rate_scale_for_zoom(initial_scale);
+        let a_phase = (time * A_PHASE_RATE * phase_rate_scale % std::f64::consts::TAU) as f32;
+        let zoom_phase =
+            (time * ZOOM_PHASE_RATE * phase_rate_scale % std::f64::consts::TAU) as f32;
 
         // ── Pass 1: Scene ───────────────────────────────────────────────
         scene_mat.set_uniform("center", vec2(center_x as f32, center_y as f32));
